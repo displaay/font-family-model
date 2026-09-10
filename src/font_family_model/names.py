@@ -352,3 +352,31 @@ def apply_wws_bit(font, model: StaticFamilyNames) -> bool:
     else:
         os2.fsSelection &= ~FS_SELECTION_WWS & 0xFFFF
     return bool(os2.fsSelection & FS_SELECTION_WWS)
+
+
+def strip_macintosh_name_records(font) -> int:
+    """Remove every Macintosh-platform name record from a static face.
+
+    A Macintosh (platform 1) record is a second copy of a name in a legacy
+    encoding, and nothing that reads a static OpenType font today needs one:
+    macOS has read the Windows records for two decades. What the copies do
+    instead is disagree. They are written in MacRoman, so a family name with a
+    character MacRoman does not hold either fails to compile or is silently
+    left at its previous value, and the font then answers the same question
+    two ways depending on which platform a reader prefers.
+
+    Variable fonts are the exception and keep their Mac duplicates - see
+    :mod:`font_family_model.variable`, which writes them. There the records
+    are not legacy baggage but what an application reads when it cannot see
+    the ``fvar`` model, and the pass keeps them in step with the Windows ones
+    on purpose.
+
+    :param font: A ``TTFont``.
+    :returns: How many records were removed.
+    """
+    name_table = font["name"]
+    before = len(name_table.names)
+    name_table.names = [
+        record for record in name_table.names if record.platformID != 1
+    ]
+    return before - len(name_table.names)

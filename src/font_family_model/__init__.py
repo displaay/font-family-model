@@ -39,6 +39,7 @@ from font_family_model.names import (
     postscript_component,
     postscript_name,
     static_family_names,
+    strip_macintosh_name_records,
 )
 from font_family_model.variable import (
     postprocess_variable_font,
@@ -69,5 +70,6 @@ __all__ = [
     "postscript_component",
     "postscript_name",
     "static_family_names",
+    "strip_macintosh_name_records",
     "__version__",
 ]

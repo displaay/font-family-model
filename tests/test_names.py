@@ -20,6 +20,7 @@ from font_family_model.names import (
     postscript_component,
     postscript_name,
     static_family_names,
+    strip_macintosh_name_records,
 )
 
 FAMILY = "Cassette"
@@ -350,3 +351,32 @@ class TestApplyWwsBit:
             font = self.make_font()
             model = static_family_names(FAMILY, style)
             assert apply_wws_bit(font, model) == (model.wws_family is None)
+
+
+class TestStripMacintoshNameRecords:
+    def make_font(self):
+        from fontTools.ttLib import TTFont, newTable
+
+        font = TTFont()
+        font["name"] = newTable("name")
+        font["name"].names = []
+        for name_id, value in ((1, "Cassette"), (2, "Regular"), (16, "Cassette")):
+            font["name"].setName(value, name_id, 3, 1, 0x409)
+            font["name"].setName(value, name_id, 1, 0, 0)
+        return font
+
+    def test_every_macintosh_record_goes(self):
+        font = self.make_font()
+        assert strip_macintosh_name_records(font) == 3
+        assert not [r for r in font["name"].names if r.platformID == 1]
+
+    def test_the_windows_records_stay(self):
+        font = self.make_font()
+        strip_macintosh_name_records(font)
+        assert font["name"].getDebugName(1) == "Cassette"
+        assert len(font["name"].names) == 3
+
+    def test_a_font_with_none_is_unchanged(self):
+        font = self.make_font()
+        strip_macintosh_name_records(font)
+        assert strip_macintosh_name_records(font) == 0
