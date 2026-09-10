@@ -55,6 +55,9 @@ HEAD_MACSTYLE_BOLD = 1 << 0
 #: ``head.macStyle`` bit 1.
 HEAD_MACSTYLE_ITALIC = 1 << 1
 
+#: The platform a family-model name record is written on.
+WINDOWS_ENGLISH_NAME = (3, 1, 0x409)
+
 #: Characters ``name`` ID 6 may not hold: they delimit a PostScript token.
 _POSTSCRIPT_RESERVED = frozenset("[](){}<>/%")
 
@@ -413,3 +416,75 @@ def apply_width_class(font, model: StaticFamilyNames) -> int | None:
         return None
     font["OS/2"].usWidthClass = model.width_class
     return model.width_class
+
+
+def unique_id(
+    postscript_name: str,
+    *,
+    existing: str | None = None,
+    version: str | None = None,
+    vendor: str | None = None,
+) -> str | None:
+    """The Unique Font Identifier (``name`` ID 3), kept in step with ID 6.
+
+    The convention is three fields, ``version;vendor;PostScript name``, and
+    what makes the identifier unique is the third. So the first two are
+    preserved from whatever the font already said - the version and the vendor
+    are facts about the release, not about the renaming - and only the last is
+    replaced.
+
+    When the existing record is not in that shape there is nothing to
+    preserve, and ``version`` and ``vendor`` are used instead: ``name`` ID 5
+    and ``OS/2.achVendID`` are where a caller finds them. The version is cut at
+    the first semicolon, because a build stamp appended to ID 5 - ttfautohint
+    writes one - would otherwise split the identifier into four fields and
+    stop anything reading it by position.
+
+    :param postscript_name: ``name`` ID 6, the third field.
+    :param existing: The current ``name`` ID 3, if there is one.
+    :param version: Fallback for the first field, usually ``name`` ID 5.
+    :param vendor: Fallback for the second field, usually ``OS/2.achVendID``.
+    :returns: The identifier, or None when neither source yields both of the
+        first two fields - then the record is better left as it is.
+    """
+    fields = (existing or "").split(";")
+    if len(fields) >= 3 and fields[0].strip() and fields[1].strip():
+        return f"{fields[0]};{fields[1]};{postscript_name}"
+
+    version_field = (version or "").split(";")[0].strip()
+    vendor_field = (vendor or "").strip()
+    if not version_field or not vendor_field:
+        return None
+    return f"{version_field};{vendor_field};{postscript_name}"
+
+
+def apply_unique_id(font, postscript_name: str) -> str | None:
+    """Write ``name`` ID 3 for a static face, preserving what it can.
+
+    Reads the current record, ``name`` ID 5 and ``OS/2.achVendID`` and hands
+    them to :func:`unique_id`. A record that cannot be decoded is left alone
+    rather than guessed at - a Macintosh record read as the UTF-16BE a Windows
+    one uses comes back as mojibake.
+
+    :param font: A ``TTFont``.
+    :param postscript_name: The PostScript name the identifier must match.
+    :returns: What was written, or None when nothing was.
+    """
+    name_table = font["name"]
+    try:
+        existing = name_table.getDebugName(3)
+    except (UnicodeDecodeError, AttributeError):
+        return None
+    try:
+        version = name_table.getDebugName(5)
+    except (UnicodeDecodeError, AttributeError):
+        version = None
+    vendor = getattr(font["OS/2"], "achVendID", None) if "OS/2" in font else None
+
+    value = unique_id(
+        postscript_name, existing=existing, version=version, vendor=vendor
+    )
+    if value is None:
+        return None
+    name_table.setName(value, 3, *WINDOWS_ENGLISH_NAME)
+    return value

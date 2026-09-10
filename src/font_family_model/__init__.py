@@ -31,6 +31,7 @@ from font_family_model.family import (
 from font_family_model.names import (
     StaticFamilyNames,
     apply_ribbi_bits,
+    apply_unique_id,
     apply_width_class,
     apply_wws_bit,
     collapse_spaces,
@@ -41,6 +42,7 @@ from font_family_model.names import (
     postscript_name,
     static_family_names,
     strip_macintosh_name_records,
+    unique_id,
 )
 from font_family_model.variable import (
     postprocess_variable_font,
@@ -63,6 +65,7 @@ __all__ = [
     "compose_family",
     "StaticFamilyNames",
     "apply_ribbi_bits",
+    "apply_unique_id",
     "apply_width_class",
     "apply_wws_bit",
     "collapse_spaces",
@@ -73,5 +76,6 @@ __all__ = [
     "postscript_name",
     "static_family_names",
     "strip_macintosh_name_records",
+    "unique_id",
     "__version__",
 ]

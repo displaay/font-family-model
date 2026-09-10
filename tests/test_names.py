@@ -12,6 +12,7 @@ from font_family_model.names import (
     HEAD_MACSTYLE_BOLD,
     HEAD_MACSTYLE_ITALIC,
     apply_ribbi_bits,
+    apply_unique_id,
     apply_width_class,
     apply_wws_bit,
     collapse_spaces,
@@ -22,6 +23,7 @@ from font_family_model.names import (
     postscript_name,
     static_family_names,
     strip_macintosh_name_records,
+    unique_id,
 )
 
 FAMILY = "Cassette"
@@ -441,3 +443,71 @@ class TestWidthClass:
 
         assert apply_width_class(
             TTFont(), static_family_names(FAMILY, "Condensed Bold")) is None
+
+
+class TestUniqueId:
+    def test_the_version_and_vendor_are_preserved(self):
+        # What makes the identifier unique is the PostScript name; the version
+        # and the vendor are facts about the release, not about the renaming.
+        assert unique_id("Saans-Bold", existing="4.003;DP;Saans-Regular") == (
+            "4.003;DP;Saans-Bold"
+        )
+
+    def test_extra_fields_beyond_the_third_are_dropped(self):
+        assert unique_id("X-Bold", existing="1.0;DP;X-Regular;stale") == (
+            "1.0;DP;X-Bold"
+        )
+
+    def test_a_record_that_is_not_three_fields_falls_back(self):
+        assert unique_id("X-Bold", existing="4.003") is None
+        assert unique_id(
+            "X-Bold", existing="4.003", version="1.000", vendor="DP"
+        ) == "1.000;DP;X-Bold"
+
+    def test_a_build_stamp_in_the_version_is_cut_at_the_semicolon(self):
+        # ttfautohint appends one to name ID 5. Left in, it splits the
+        # identifier into four fields and stops anything reading it by
+        # position.
+        assert unique_id(
+            "Cassette-SemiBold",
+            version="Version 1.100; ttfautohint (v1.8.4.16-eb64)",
+            vendor="DP",
+        ) == "Version 1.100;DP;Cassette-SemiBold"
+
+    def test_an_empty_field_is_not_preserved(self):
+        assert unique_id("X-Bold", existing=";;X-Regular") is None
+
+    def test_nothing_to_go_on_leaves_the_record_alone(self):
+        assert unique_id("X-Bold") is None
+        assert unique_id("X-Bold", version="1.0") is None
+        assert unique_id("X-Bold", vendor="DP") is None
+
+
+class TestApplyUniqueId:
+    def make_font(self, existing=None, version=None, vendor="DP "):
+        from fontTools.ttLib import TTFont, newTable
+
+        font = TTFont()
+        font["name"] = newTable("name")
+        font["name"].names = []
+        if existing is not None:
+            font["name"].setName(existing, 3, 3, 1, 0x409)
+        if version is not None:
+            font["name"].setName(version, 5, 3, 1, 0x409)
+        font["OS/2"] = newTable("OS/2")
+        font["OS/2"].achVendID = vendor
+        return font
+
+    def test_the_record_is_rewritten(self):
+        font = self.make_font(existing="4.003;DP;Saans-Regular")
+        assert apply_unique_id(font, "Saans-Bold") == "4.003;DP;Saans-Bold"
+        assert font["name"].getDebugName(3) == "4.003;DP;Saans-Bold"
+
+    def test_the_vendor_comes_from_os2_when_there_is_nothing_to_preserve(self):
+        font = self.make_font(version="Version 1.100")
+        assert apply_unique_id(font, "X-Bold") == "Version 1.100;DP;X-Bold"
+
+    def test_a_font_with_nothing_to_go_on_is_left_alone(self):
+        font = self.make_font(vendor="")
+        assert apply_unique_id(font, "X-Bold") is None
+        assert font["name"].getDebugName(3) is None
