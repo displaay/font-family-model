@@ -16,9 +16,9 @@ When they disagree, every application picks a different answer, and which one
 it picks depends on which field it happens to trust. That is not hypothetical:
 it is what this package was extracted to fix, twice.
 
-The package is shared by Displaay's two font tools — the Customizer and the
-Font Builder — so that a face exported by either describes itself the same way.
-Neither keeps a copy of any rule here.
+It is meant to be shared by every tool in a pipeline that writes these
+tables, so that a face built by any of them describes itself the same way,
+and so no rule here needs a second copy anywhere.
 
 ## The defect this exists for
 
@@ -240,9 +240,12 @@ carries something the model did not parse, and a caller holding an authored
 label should treat that label as one opaque token: keep it verbatim in
 `name` 1, 4, 6, 16 and 17, and take from the model only the answers that
 carry no text — `name` 2, the RIBBI and WWS bits, the width class, the unique
-identifier. The Displaay Customizer does exactly that, because its styles come
-from a customer's name convention; the Font Builder does not need to, because
-its styles are the instance names in the `.glyphs` source.
+identifier.
+
+Which side of the boundary you are on depends on where the styles come from.
+Instance names authored in the source are descriptions, and respelling them
+is the point. A style supplied from outside — chosen by whoever ordered the
+font, carried in by an API — is a name, and is not yours to correct.
 
 ## Modules
 
