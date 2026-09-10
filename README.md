@@ -100,50 +100,52 @@ format 4, the other is handed the body of a request — and a second reader here
 would be a second answer to what one file says. It also keeps `glyphsLib` out
 of the runtime dependencies entirely.
 
-## The legacy family, and why there are two rules
+## The static family model
 
-`name` ID 16/17 says what a family really is. `name` ID 1/2 is what an
-application that predates the typographic model reads, and it can only hold
-four faces — Regular, Italic, Bold, Bold Italic. Everything else has to be
-split into a legacy family of its own, and *where* the split falls is a
-decision, not a calculation.
+`name` ID 16/17 says what a family really is. Everything else in the `name`
+table is a projection of it for an application that reads something narrower,
+and the projections have to agree — an application that reads two of them and
+finds them describing different families picks one, and a different application
+picks the other.
 
-The two tools answer it differently, and `names` holds both:
+`static_family_names` answers all of them from one reading of the style:
 
 ```python
-from font_family_model import legacy_family_name, legacy_family_and_subfamily
+from font_family_model import static_family_names
 
-legacy_family_name("Cassette", "Condensed Bold")          # 'Cassette Condensed Bold'
-legacy_family_and_subfamily("Cassette", "Condensed Bold") # ('Cassette Condensed', 'Bold')
+m = static_family_names("Cassette", "Mono Bold Italic")
+m.legacy_family, m.legacy_subfamily   # 1/2:   'Cassette Mono', 'Bold Italic'
+m.family, m.subfamily                 # 16/17: 'Cassette', 'Mono Bold Italic'
+m.wws_family, m.wws_subfamily         # 21/22: 'Cassette Mono', 'Bold Italic'
+m.is_wws_conformant                   # OS/2.fsSelection bit 8
 ```
 
-| style | `legacy_family_name` | `legacy_family_and_subfamily` |
-|---|---|---|
-| `Bold Italic` | `Cassette` | `Cassette` / `Bold Italic` |
-| `Thin Italic` | `Cassette Thin` | `Cassette Thin` / `Italic` |
-| `Semibold` | `Cassette Semibold` | `Cassette SemiBold` / `Regular` |
-| `Extra Light Italic` | `Cassette Extra Light` | `Cassette ExtraLight` / `Italic` |
-| `Condensed Bold` | `Cassette Condensed Bold` | `Cassette Condensed` / `Bold` |
-| `Mono Bold Italic` | `Cassette Mono Bold` | `Cassette Mono` / `Bold Italic` |
+| style | 1 | 2 | 21 | 22 |
+|---|---|---|---|---|
+| `Bold Italic` | `Cassette` | `Bold Italic` | — | — |
+| `Semibold` | `Cassette SemiBold` | `Regular` | — | — |
+| `Extra Bold` | `Cassette ExtraBold` | `Regular` | — | — |
+| `Condensed Bold` | `Cassette Condensed` | `Bold` | — | — |
+| `Mono Bold Italic` | `Cassette Mono` | `Bold Italic` | `Cassette Mono` | `Bold Italic` |
 
-Two differences, both load-bearing:
+**The legacy family (1/2)** holds four faces at most, so anything else is split
+into a family of its own. The split falls so that a genuine RIBBI quad forms
+inside each width — `Cassette Condensed` holding Regular, Italic, Bold and Bold
+Italic — which is what lets Word compose `Bold Italic` from the `Bold` button
+rather than list a separate face. A weight RIBBI cannot express moves into the
+family name, in its canonical OpenType spelling.
 
-**Spelling.** The Office rule normalizes a weight onto its canonical OpenType
-spelling. The Customizer must not: a customer orders a family under a name
-convention they chose, and the weight spelling in the source is part of it.
-Rewriting `Semibold` to `SemiBold` would rename faces that are already
-installed.
+Note what that means for `Extra Bold`: `name` ID 2 is `Regular`, not `Bold`.
+It is the Regular of its own legacy family, and setting the bold bit would have
+an application synthesise a bolder face from the heaviest weight drawn. Reading
+the style as *words* rather than as attributes gets this wrong.
 
-**Where the quad forms.** The Office rule builds a genuine RIBBI quad inside
-each width — `Cassette Condensed` holding Regular, Italic, Bold and Bold Italic
-— which is what the model asks for and what lets Word compose Bold Italic from
-the Bold button rather than list a separate face. The Customizer rule gives
-every compound style its own legacy family, which keeps macOS from labelling
-`Condensed Regular Italic` as a bare `Italic` in the font picker.
-
-Adopting either rule in the other tool would move ID 1 and ID 2 on faces that
-have already shipped. They live side by side, and the tests pin the
-divergence, so that closing it stays a decision someone makes on purpose.
+**The WWS family (21/22)** is the family as it would be if weight, width and
+slope were the only axes. A face whose style is nothing but those three *is*
+its typographic family: it carries no 21/22 at all and sets the WWS bit in
+`OS/2.fsSelection` instead. Only an attribute WWS cannot express — `Mono`,
+`Display`, `Text` — needs the pair. Writing 21/22 on a WWS-conformant face just
+repeats 16/17, and a reader that trusts them lists the face twice.
 
 ## Modules
 
@@ -151,8 +153,8 @@ divergence, so that closing it stays a decision someone makes on purpose.
   (`verify_office_variable_metadata`, `verify_stat_covers_fvar`)
 - **`family`** — splitting and composing family and style names: weight
   spellings, italic suffixes, width families, collections
-- **`names`** — the static side: the legacy family under each rule, and
-  `name` record helpers
+- **`names`** — the static side: every family-model name record for one face,
+  from one rule, plus `name` record helpers
 
 ## Install
 

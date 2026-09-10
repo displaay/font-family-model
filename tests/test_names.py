@@ -1,4 +1,4 @@
-"""The legacy family (``name`` ID 1/2), under both rules."""
+"""The static family model: legacy, typographic and WWS name records."""
 
 from __future__ import annotations
 
@@ -7,8 +7,9 @@ import pytest
 from font_family_model.names import (
     collapse_spaces,
     legacy_family_and_subfamily,
-    legacy_family_name,
     mac_roman_encodable,
+    needs_wws_names,
+    static_family_names,
 )
 
 FAMILY = "Cassette"
@@ -46,60 +47,6 @@ class TestCollapseSpaces:
     )
     def test_runs_of_whitespace_go(self, value, expected):
         assert collapse_spaces(value) == expected
-
-
-class TestLegacyFamilyName:
-    """The Customizer rule: the source's own spelling, kept."""
-
-    @pytest.mark.parametrize(
-        "style", ["Regular", "Italic", "Bold", "Bold Italic", "Regular Italic"],
-    )
-    def test_the_ribbi_quad_collapses_onto_the_typographic_family(self, style):
-        assert legacy_family_name(FAMILY, style) == FAMILY
-
-    @pytest.mark.parametrize(
-        ("style", "expected"),
-        [
-            ("Thin", "Cassette Thin"),
-            ("Thin Italic", "Cassette Thin"),
-            ("Light", "Cassette Light"),
-            ("Medium", "Cassette Medium"),
-            ("Heavy", "Cassette Heavy"),
-        ],
-    )
-    def test_every_other_weight_gets_a_legacy_family_of_its_own(self, style, expected):
-        assert legacy_family_name(FAMILY, style) == expected
-
-    @pytest.mark.parametrize(
-        ("style", "expected"),
-        [
-            ("Condensed Regular", "Cassette Condensed Regular"),
-            ("Condensed Regular Italic", "Cassette Condensed Regular"),
-            ("Condensed Bold", "Cassette Condensed Bold"),
-            ("Condensed Bold Italic", "Cassette Condensed Bold"),
-        ],
-    )
-    def test_a_compound_style_keeps_its_own_family(self, style, expected):
-        # Folding these onto the bare family would put Condensed Regular and
-        # Condensed Regular Italic in a quad with Bold and Bold Italic, and
-        # macOS would then label the italic by its RIBBI subfamily - a bare
-        # "Italic" in the font picker.
-        assert legacy_family_name(FAMILY, style) == expected
-
-    def test_the_source_spelling_of_a_weight_is_not_normalized(self):
-        # A customer ordered the family under a name convention they chose.
-        assert legacy_family_name(FAMILY, "Semibold") == "Cassette Semibold"
-        assert legacy_family_name(FAMILY, "Extra Light") == "Cassette Extra Light"
-
-    def test_italic_is_taken_out_of_the_family_name_for_a_ribbi_style(self):
-        assert legacy_family_name("Cassette Italic", "Italic") == FAMILY
-
-    def test_an_empty_style_is_the_bare_family(self):
-        assert legacy_family_name(FAMILY, "") == FAMILY
-        assert legacy_family_name(FAMILY, None) == FAMILY
-
-    def test_double_spaces_do_not_reach_a_font_menu(self):
-        assert legacy_family_name("Cassette  Mono", "Thin") == "Cassette Mono Thin"
 
 
 class TestLegacyFamilyAndSubfamily:
@@ -155,32 +102,93 @@ class TestLegacyFamilyAndSubfamily:
         )
 
 
-class TestTheTwoRulesDisagree:
-    """Pinning the divergence, so that closing it stays a decision."""
-
-    @pytest.mark.parametrize(
-        ("style", "customizer", "office"),
-        [
-            ("Semibold", "Cassette Semibold", "Cassette SemiBold"),
-            ("Extra Light Italic", "Cassette Extra Light", "Cassette ExtraLight"),
-            ("Ultra Black", "Cassette Ultra Black", "Cassette ExtraBlack"),
-            ("Condensed Bold", "Cassette Condensed Bold", "Cassette Condensed"),
-            ("Mono Bold Italic", "Cassette Mono Bold", "Cassette Mono"),
-        ],
-    )
-    def test_the_rules_that_differ(self, style, customizer, office):
-        assert legacy_family_name(FAMILY, style) == customizer
-        assert legacy_family_and_subfamily(FAMILY, style)[0] == office
-
+class TestNeedsWwsNames:
     @pytest.mark.parametrize(
         "style",
+        ["Regular", "Bold Italic", "Semibold", "Condensed Bold", "Extended Thin"],
+    )
+    def test_a_style_of_weight_width_and_slope_needs_none(self, style):
+        # The face *is* its WWS family; 21/22 would only repeat 16/17, and a
+        # reader that trusts them lists the face twice.
+        assert not needs_wws_names(style)
+
+    @pytest.mark.parametrize(
+        "style", ["Mono Regular", "Mono Bold Italic", "Display Light"],
+    )
+    def test_an_attribute_wws_cannot_express_needs_them(self, style):
+        assert needs_wws_names(style)
+
+
+class TestStaticFamilyNames:
+    def test_the_ribbi_quad_carries_no_wws_records(self):
+        for style in ("Regular", "Italic", "Bold", "Bold Italic"):
+            model = static_family_names(FAMILY, style)
+            assert model.legacy_family == FAMILY
+            assert model.wws_family is None
+            assert model.wws_subfamily is None
+            assert model.is_wws_conformant
+            assert not model.split_legacy_family
+
+    def test_a_width_forms_its_own_quad_and_stays_wws_conformant(self):
+        model = static_family_names(FAMILY, "Condensed Bold Italic")
+        assert (model.legacy_family, model.legacy_subfamily) == (
+            "Cassette Condensed",
+            "Bold Italic",
+        )
+        # Width is a WWS attribute, so the split family still needs no 21/22.
+        assert model.wws_family is None
+        assert model.is_wws_conformant
+        assert model.split_legacy_family
+
+    def test_a_non_wws_attribute_moves_into_the_wws_family(self):
+        model = static_family_names(FAMILY, "Mono Bold Italic")
+        assert model.wws_family == "Cassette Mono"
+        assert model.wws_subfamily == "Bold Italic"
+        assert not model.is_wws_conformant
+
+    def test_the_wws_bit_and_the_wws_records_are_one_statement(self):
+        for style in ("Regular", "Semibold", "Condensed Bold", "Mono Light"):
+            model = static_family_names(FAMILY, style)
+            assert model.is_wws_conformant == (model.wws_family is None)
+
+    @pytest.mark.parametrize(
+        ("style", "bold", "italic"),
         [
-            "Regular", "Italic", "Bold", "Bold Italic",
-            "Thin", "Thin Italic", "Light", "Medium", "Heavy", "Black",
-            "Condensed Thin", "Extended Medium", "Wide Light Italic",
+            ("Regular", False, False),
+            ("Italic", False, True),
+            ("Bold", True, False),
+            ("Bold Italic", True, True),
+            ("Condensed Bold", True, False),
+            # A heavier weight is its own family's Regular. Setting the bold
+            # bit would have an application synthesise a bolder face from it.
+            ("Semibold", False, False),
+            ("Extra Bold", False, False),
+            ("Heavy Italic", False, True),
         ],
     )
-    def test_the_rules_that_agree(self, style):
-        assert legacy_family_name(FAMILY, style) == (
-            legacy_family_and_subfamily(FAMILY, style)[0]
+    def test_the_ribbi_bits(self, style, bold, italic):
+        model = static_family_names(FAMILY, style)
+        assert (model.is_bold, model.is_italic) == (bold, italic)
+
+    def test_the_weight_spelling_is_canonical(self):
+        assert static_family_names(FAMILY, "Semibold").legacy_family == (
+            "Cassette SemiBold"
         )
+        assert static_family_names(FAMILY, "Ultra Black").legacy_family == (
+            "Cassette ExtraBlack"
+        )
+
+    def test_double_spaces_do_not_reach_a_font_menu(self):
+        model = static_family_names("Cassette  Mono", "Thin")
+        assert model.family == "Cassette Mono"
+        assert model.legacy_family == "Cassette Mono Thin"
+
+    def test_every_record_comes_from_the_same_reading_of_the_style(self):
+        # The point of one entry point: a caller cannot take 1/2 from one rule
+        # and 21/22 from another and ship a font that describes two families.
+        model = static_family_names(FAMILY, "Mono SemiBold Italic")
+        assert model.legacy_family == "Cassette Mono SemiBold"
+        assert model.legacy_subfamily == "Italic"
+        assert model.wws_family == "Cassette Mono"
+        assert model.wws_subfamily == "SemiBold Italic"
+        assert model.subfamily == "Mono SemiBold Italic"
