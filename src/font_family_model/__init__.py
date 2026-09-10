@@ -16,8 +16,8 @@ that a font exported by either describes itself the same way.
 - :mod:`font_family_model.family` splits and composes family and style names -
   weight spellings, italic suffixes, width families, collections.
 - :mod:`font_family_model.names` holds the static side: every family-model
-  name record for one face - legacy (1/2), typographic (16/17) and WWS
-  (21/22) - derived from one rule so they cannot disagree.
+  record for one face - ``name`` 1/2/3/6/16/17/21/22, the RIBBI and WWS bits,
+  the width class - derived from one rule so they cannot disagree.
 
 The package never reads a ``.glyphs`` file. Callers that have source metadata
 hand over an already-parsed font object; each application has its own loader.
@@ -52,7 +52,7 @@ from font_family_model.variable import (
     verify_stat_covers_fvar,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "postprocess_variable_font",
