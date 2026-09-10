@@ -15,8 +15,16 @@ that reads something narrower:
   cannot express - ``Mono``, ``Display``, ``Text`` - needs the pair, and then
   21 is the family plus that attribute and 22 is what is left.
 
-:func:`static_family_names` answers all of it at once, so that a caller cannot
-set one of them from a different rule than the others.
+And the ``name`` table is not the only place the answer is written down:
+``OS/2.fsSelection`` and ``head.macStyle`` carry the same RIBBI statement in
+bits, and ``name`` ID 6 carries the same family and style with the characters
+PostScript cannot hold taken out. A reader that finds the bits disagreeing with
+ID 2 has no way to tell which was meant.
+
+:func:`static_family_names` answers all of it at once, and
+:func:`apply_ribbi_bits` and :func:`postscript_name` write the other two forms
+of the same answer, so that a caller cannot take one of them from a different
+rule than the others.
 """
 
 from __future__ import annotations
@@ -28,6 +36,30 @@ from .family import compose_family, parse_style_attributes
 
 #: The four faces a single legacy family can hold.
 RIBBI_STYLES = ("Regular", "Italic", "Bold", "Bold Italic")
+
+#: ``OS/2.fsSelection`` bit 0: the face is the italic of its legacy family.
+FS_SELECTION_ITALIC = 1 << 0
+#: ``OS/2.fsSelection`` bit 5: the face is the bold of its legacy family.
+FS_SELECTION_BOLD = 1 << 5
+#: ``OS/2.fsSelection`` bit 6: the face is the regular of its legacy family.
+FS_SELECTION_REGULAR = 1 << 6
+#: ``OS/2.fsSelection`` bit 8: weight, width and slope describe this face
+#: completely, so it carries no ``name`` ID 21/22. Defined from version 4 on.
+FS_SELECTION_WWS = 1 << 8
+#: ``head.macStyle`` bit 0.
+HEAD_MACSTYLE_BOLD = 1 << 0
+#: ``head.macStyle`` bit 1.
+HEAD_MACSTYLE_ITALIC = 1 << 1
+
+#: Characters ``name`` ID 6 may not hold: they delimit a PostScript token.
+_POSTSCRIPT_RESERVED = frozenset("[](){}<>/%")
+
+#: Weight class at and above which a face that was split into a legacy family
+#: of its own still claims the bold bit. Microsoft ships Aptos Black (900) with
+#: ``fsSelection`` 0x00A0 and ``macStyle`` 0x0001 although its ``name`` ID 2 is
+#: ``Regular``: without the bit, the B button in Word has GDI smear a faux bold
+#: over a design that is already the heaviest one drawn.
+SPLIT_FAMILY_BOLD_WEIGHT_CLASS = 700
 
 
 def mac_roman_encodable(value: str) -> bool:
@@ -51,6 +83,44 @@ def collapse_spaces(value: str) -> str:
     leaves a double space behind that a font menu will show.
     """
     return re.sub(r"\s+", " ", value or "").strip()
+
+
+def postscript_component(value: str) -> str:
+    """Reduce one half of a PostScript name to what ``name`` ID 6 may hold.
+
+    The record is printable ASCII with no spaces, and ten characters are
+    reserved because they delimit a PostScript token: ``[](){}<>`` together
+    with ``/`` and ``%``. Everything outside that survives unchanged - a
+    hyphen is legal *inside* a component, it is only the one joining the
+    family to the style that has to be the sole delimiter.
+
+    :param value: A family or style name.
+    :returns: The component, possibly empty.
+    """
+    return "".join(
+        ch for ch in (value or "")
+        if 0x21 <= ord(ch) <= 0x7E and ch not in _POSTSCRIPT_RESERVED
+    )
+
+
+def postscript_name(family: str, subfamily: str) -> str:
+    """The PostScript name (``name`` ID 6) for a static face.
+
+    ``Family-Style``, each half reduced by :func:`postscript_component`. A face
+    with no style is named for its family alone rather than left with a
+    trailing dash.
+
+    :param family: The typographic family name.
+    :param subfamily: The typographic subfamily.
+    :returns: The PostScript name.
+    """
+    family_part = postscript_component(family)
+    style_part = postscript_component(subfamily)
+    if not style_part:
+        return family_part
+    if not family_part:
+        return style_part
+    return f"{family_part}-{style_part}"
 
 
 def legacy_family_and_subfamily(family: str, subfamily: str) -> tuple[str, str]:
@@ -197,3 +267,88 @@ def static_family_names(family: str, subfamily: str) -> StaticFamilyNames:
         wws_subfamily=wws_subfamily,
         is_wws_conformant=attrs.is_wws_conformant,
     )
+
+
+def apply_ribbi_bits(font, model: StaticFamilyNames) -> tuple[bool, bool]:
+    """Write the RIBBI statement into ``OS/2.fsSelection`` and ``head.macStyle``.
+
+    The bits say the same thing as ``name`` ID 2, and an application reads
+    whichever it happens to trust: without them Word treats both faces of a
+    pair as Regular and the italic toggle misbehaves. They are therefore taken
+    from the same model rather than re-derived from the style string.
+
+    Two things are read off the font rather than the model, because only the
+    font knows them:
+
+    *Italic angle.* A face drawn on a slant is italic whatever its style is
+    called, so a non-zero ``post.italicAngle`` sets the bit on its own.
+
+    *Weight class.* A face split into a legacy family of its own is that
+    family's Regular, so the model gives it no bold bit - but at
+    :data:`SPLIT_FAMILY_BOLD_WEIGHT_CLASS` and above it still claims one, or
+    the B button synthesises something bolder than the heaviest weight drawn.
+
+    Every other bit - ``USE_TYPO_METRICS``, WWS - is left as it was.
+
+    :param font: A ``TTFont`` with ``OS/2`` and ``head``.
+    :param model: The face's :class:`StaticFamilyNames`.
+    :returns: ``(is_bold, is_italic)`` as written.
+    """
+    is_bold = model.is_bold
+    is_italic = model.is_italic
+
+    if "post" in font and font["post"].italicAngle:
+        is_italic = True
+    if (
+        not is_bold
+        and model.split_legacy_family
+        and "OS/2" in font
+        and font["OS/2"].usWeightClass >= SPLIT_FAMILY_BOLD_WEIGHT_CLASS
+    ):
+        is_bold = True
+
+    if "OS/2" in font:
+        os2 = font["OS/2"]
+        os2.fsSelection &= ~(
+            FS_SELECTION_ITALIC | FS_SELECTION_BOLD | FS_SELECTION_REGULAR
+        ) & 0xFFFF
+        if is_italic:
+            os2.fsSelection |= FS_SELECTION_ITALIC
+        if is_bold:
+            os2.fsSelection |= FS_SELECTION_BOLD
+        if not is_bold and not is_italic:
+            os2.fsSelection |= FS_SELECTION_REGULAR
+
+    if "head" in font:
+        head = font["head"]
+        head.macStyle &= ~(HEAD_MACSTYLE_BOLD | HEAD_MACSTYLE_ITALIC) & 0xFFFF
+        if is_bold:
+            head.macStyle |= HEAD_MACSTYLE_BOLD
+        if is_italic:
+            head.macStyle |= HEAD_MACSTYLE_ITALIC
+
+    return (is_bold, is_italic)
+
+
+def apply_wws_bit(font, model: StaticFamilyNames) -> bool:
+    """Write the WWS bit, the other half of what ``name`` ID 21/22 say.
+
+    A face that carries no 21/22 has to say why - that weight, width and slope
+    describe it completely - and ``OS/2.fsSelection`` bit 8 is where. The bit
+    is only defined from ``OS/2`` version 4 on, so an older table is raised;
+    below that there was no field for a reader to have looked at.
+
+    :param font: A ``TTFont`` with ``OS/2``.
+    :param model: The face's :class:`StaticFamilyNames`.
+    :returns: Whether the bit is now set.
+    """
+    if "OS/2" not in font:
+        return False
+    os2 = font["OS/2"]
+    if model.is_wws_conformant:
+        os2.fsSelection |= FS_SELECTION_WWS
+        if os2.version < 4:
+            os2.version = 4
+    else:
+        os2.fsSelection &= ~FS_SELECTION_WWS & 0xFFFF
+    return bool(os2.fsSelection & FS_SELECTION_WWS)

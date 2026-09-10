@@ -5,10 +5,20 @@ from __future__ import annotations
 import pytest
 
 from font_family_model.names import (
+    FS_SELECTION_BOLD,
+    FS_SELECTION_ITALIC,
+    FS_SELECTION_REGULAR,
+    FS_SELECTION_WWS,
+    HEAD_MACSTYLE_BOLD,
+    HEAD_MACSTYLE_ITALIC,
+    apply_ribbi_bits,
+    apply_wws_bit,
     collapse_spaces,
     legacy_family_and_subfamily,
     mac_roman_encodable,
     needs_wws_names,
+    postscript_component,
+    postscript_name,
     static_family_names,
 )
 
@@ -192,3 +202,151 @@ class TestStaticFamilyNames:
         assert model.wws_family == "Cassette Mono"
         assert model.wws_subfamily == "SemiBold Italic"
         assert model.subfamily == "Mono SemiBold Italic"
+
+
+class TestPostscriptName:
+    @pytest.mark.parametrize(
+        ("family", "subfamily", "expected"),
+        [
+            ("Cassette", "Regular", "Cassette-Regular"),
+            ("Cassette", "SemiBold", "Cassette-SemiBold"),
+            ("Bagoss Condensed", "Bold Italic", "BagossCondensed-BoldItalic"),
+        ],
+    )
+    def test_the_two_halves_are_joined_by_the_one_dash(self, family, subfamily, expected):
+        assert postscript_name(family, subfamily) == expected
+
+    def test_a_hyphen_inside_a_component_survives(self):
+        # Only the dash joining the halves delimits; one inside a name is legal.
+        assert postscript_name("Cassette-Pro", "Bold") == "Cassette-Pro-Bold"
+
+    def test_a_face_with_no_style_is_not_left_with_a_trailing_dash(self):
+        assert postscript_name("Cassette", "") == "Cassette"
+
+    @pytest.mark.parametrize("char", list("[](){}<>/%"))
+    def test_the_reserved_characters_are_dropped(self, char):
+        # These delimit a PostScript token, so a name that holds one is not a
+        # name any reader can take apart again.
+        assert postscript_name(f"Ca{char}ssette", "Bold") == "Cassette-Bold"
+
+    @pytest.mark.parametrize("value", ["Malý", "Cassette Mono", "Ω"])
+    def test_anything_outside_printable_ascii_is_dropped(self, value):
+        assert all(0x21 <= ord(c) <= 0x7E for c in postscript_component(value))
+
+
+class TestApplyRibbiBits:
+    def make_font(self, *, weight_class=400, italic_angle=0.0, fs_selection=0,
+                  mac_style=0, os2_version=4):
+        from fontTools.ttLib import TTFont, newTable
+
+        font = TTFont()
+        font["OS/2"] = newTable("OS/2")
+        font["OS/2"].version = os2_version
+        font["OS/2"].usWeightClass = weight_class
+        font["OS/2"].fsSelection = fs_selection
+        font["head"] = newTable("head")
+        font["head"].macStyle = mac_style
+        font["post"] = newTable("post")
+        font["post"].italicAngle = italic_angle
+        return font
+
+    @pytest.mark.parametrize(
+        ("style", "weight_class", "bold", "italic"),
+        [
+            ("Regular", 400, False, False),
+            ("Italic", 400, False, True),
+            ("Bold", 700, True, False),
+            ("Bold Italic", 700, True, True),
+            ("Condensed Bold", 700, True, False),
+            ("SemiBold", 600, False, False),
+        ],
+    )
+    def test_the_bits_say_what_name_id_2_says(self, style, weight_class, bold, italic):
+        font = self.make_font(weight_class=weight_class)
+        model = static_family_names(FAMILY, style)
+        assert apply_ribbi_bits(font, model) == (bold, italic)
+        assert bool(font["OS/2"].fsSelection & FS_SELECTION_BOLD) == bold
+        assert bool(font["OS/2"].fsSelection & FS_SELECTION_ITALIC) == italic
+        assert bool(font["head"].macStyle & HEAD_MACSTYLE_BOLD) == bold
+        assert bool(font["head"].macStyle & HEAD_MACSTYLE_ITALIC) == italic
+
+    def test_a_face_that_is_neither_claims_the_regular_bit(self):
+        font = self.make_font()
+        apply_ribbi_bits(font, static_family_names(FAMILY, "Regular"))
+        assert font["OS/2"].fsSelection & FS_SELECTION_REGULAR
+
+    def test_a_bold_face_does_not_also_claim_regular(self):
+        font = self.make_font(weight_class=700)
+        apply_ribbi_bits(font, static_family_names(FAMILY, "Bold"))
+        assert not font["OS/2"].fsSelection & FS_SELECTION_REGULAR
+
+    def test_a_slanted_face_is_italic_whatever_its_style_is_called(self):
+        font = self.make_font(italic_angle=-10.0)
+        _, is_italic = apply_ribbi_bits(font, static_family_names(FAMILY, "Regular"))
+        assert is_italic
+
+    def test_a_split_family_at_700_and_over_still_claims_the_bold_bit(self):
+        # Aptos Black ships this way: name ID 2 is Regular, the bold bit is on.
+        # Without it the B button smears a faux bold over the heaviest design.
+        font = self.make_font(weight_class=900)
+        model = static_family_names(FAMILY, "Heavy")
+        assert model.legacy_subfamily == "Regular"
+        is_bold, _ = apply_ribbi_bits(font, model)
+        assert is_bold
+
+    def test_a_split_family_below_700_does_not(self):
+        font = self.make_font(weight_class=600)
+        is_bold, _ = apply_ribbi_bits(font, static_family_names(FAMILY, "SemiBold"))
+        assert not is_bold
+
+    def test_a_light_face_never_claims_it(self):
+        font = self.make_font(weight_class=300)
+        is_bold, _ = apply_ribbi_bits(font, static_family_names(FAMILY, "Light"))
+        assert not is_bold
+
+    def test_the_other_bits_are_left_alone(self):
+        use_typo_metrics = 1 << 7
+        font = self.make_font(weight_class=700, fs_selection=use_typo_metrics)
+        apply_ribbi_bits(font, static_family_names(FAMILY, "Bold"))
+        assert font["OS/2"].fsSelection & use_typo_metrics
+
+    def test_stale_bits_are_cleared(self):
+        font = self.make_font(
+            fs_selection=FS_SELECTION_BOLD | FS_SELECTION_ITALIC,
+            mac_style=HEAD_MACSTYLE_BOLD | HEAD_MACSTYLE_ITALIC,
+        )
+        apply_ribbi_bits(font, static_family_names(FAMILY, "Regular"))
+        assert not font["OS/2"].fsSelection & FS_SELECTION_BOLD
+        assert not font["OS/2"].fsSelection & FS_SELECTION_ITALIC
+        assert font["head"].macStyle == 0
+
+
+class TestApplyWwsBit:
+    def make_font(self, os2_version=3, fs_selection=0):
+        from fontTools.ttLib import TTFont, newTable
+
+        font = TTFont()
+        font["OS/2"] = newTable("OS/2")
+        font["OS/2"].version = os2_version
+        font["OS/2"].fsSelection = fs_selection
+        return font
+
+    def test_a_wws_conformant_face_sets_the_bit(self):
+        font = self.make_font()
+        assert apply_wws_bit(font, static_family_names(FAMILY, "Condensed Bold"))
+
+    def test_the_table_is_raised_to_the_version_that_defines_the_bit(self):
+        font = self.make_font(os2_version=3)
+        apply_wws_bit(font, static_family_names(FAMILY, "Regular"))
+        assert font["OS/2"].version >= 4
+
+    def test_a_face_with_wws_names_clears_the_bit(self):
+        font = self.make_font(os2_version=4, fs_selection=FS_SELECTION_WWS)
+        assert not apply_wws_bit(font, static_family_names(FAMILY, "Mono Bold"))
+        assert not font["OS/2"].fsSelection & FS_SELECTION_WWS
+
+    def test_the_bit_and_the_records_are_one_statement(self):
+        for style in ("Regular", "Condensed Bold", "Mono Light", "SemiBold"):
+            font = self.make_font()
+            model = static_family_names(FAMILY, style)
+            assert apply_wws_bit(font, model) == (model.wws_family is None)

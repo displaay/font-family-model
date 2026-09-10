@@ -30,10 +30,14 @@ from font_family_model.family import (
 )
 from font_family_model.names import (
     StaticFamilyNames,
+    apply_ribbi_bits,
+    apply_wws_bit,
     collapse_spaces,
     legacy_family_and_subfamily,
     mac_roman_encodable,
     needs_wws_names,
+    postscript_component,
+    postscript_name,
     static_family_names,
 )
 from font_family_model.variable import (
@@ -56,10 +60,14 @@ __all__ = [
     "split_style_name",
     "compose_family",
     "StaticFamilyNames",
+    "apply_ribbi_bits",
+    "apply_wws_bit",
     "collapse_spaces",
     "legacy_family_and_subfamily",
     "mac_roman_encodable",
     "needs_wws_names",
+    "postscript_component",
+    "postscript_name",
     "static_family_names",
     "__version__",
 ]
