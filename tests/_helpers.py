@@ -11,7 +11,7 @@ from pathlib import Path
 
 from fontTools.fontBuilder import FontBuilder
 from fontTools.pens.ttGlyphPen import TTGlyphPen
-from fontTools.ttLib import TTFont, newTable
+from fontTools.ttLib import newTable
 
 
 def make_minimal_ttf(path: Path, *, variable: bool = False) -> None:

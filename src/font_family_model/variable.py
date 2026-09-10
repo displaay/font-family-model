@@ -56,7 +56,10 @@ from fontTools.misc.roundTools import otRound
 from fontTools.ttLib import TTFont, newTable
 from fontTools.ttLib.tables import otTables
 from fontTools.ttLib.tables._f_v_a_r import NamedInstance
-from fontTools.varLib import WDTH_VALUE_TO_OS2_WIDTH_CLASS, set_default_weight_width_slant
+from fontTools.varLib import (
+    WDTH_VALUE_TO_OS2_WIDTH_CLASS,
+    set_default_weight_width_slant,
+)
 from fontTools.varLib.instancer import instantiateVariableFont
 from fontTools.varLib.models import piecewiseLinearMap
 
@@ -703,7 +706,7 @@ def _office_default_instance_name(
 
 def _bind_default_fvar_instance(
     font: TTFont,
-    default_instances: list[object],
+    default_instances: list[NamedInstance],
     *,
     subfamily_name_id: int,
 ) -> None:
@@ -1264,17 +1267,19 @@ def _build_default_wght_code(font: TTFont) -> str | None:
         return None
 
     entries: list[str] = []
-    has_bold_link = bold_weight is not None and any(
+    bold_link: float | None = None
+    if bold_weight is not None and any(
         _coords_close(value, bold_weight) for value in wght_values
-    )
+    ):
+        bold_link = bold_weight
     for value in sorted(wght_values):
         if regular_weight is not None and _coords_close(value, regular_weight):
             regular_name = wght_values[value]
             elidable = "*"
-            if has_bold_link:
+            if bold_link is not None:
                 entries.append(
                     f"{_format_axis_coordinate(regular_weight)}>"
-                    f"{_format_axis_coordinate(bold_weight)}="
+                    f"{_format_axis_coordinate(bold_link)}="
                     f"{regular_name}{elidable}"
                 )
             else:
@@ -1527,8 +1532,8 @@ def _build_default_custom_axis_code(font: TTFont, axis_tag: str) -> str | None:
 
     if not values or any(len(labels) != 1 for _value, labels in values.values()):
         return None
-    labels = [next(iter(labels)) for _value, labels in values.values()]
-    if len({label.casefold() for label in labels}) != len(labels):
+    single_labels = [next(iter(labels)) for _value, labels in values.values()]
+    if len({label.casefold() for label in single_labels}) != len(single_labels):
         return None
 
     default = float(axis.defaultValue)
@@ -1749,7 +1754,6 @@ def _supplemented_axes(
         return mapping
 
     explicit_by_tag = body_by_tag(explicit)
-    default_by_tag = body_by_tag(defaults)
     merged_by_tag = body_by_tag(merged)
 
     for axis_tag in explicit_tags & default_tags:
@@ -2370,7 +2374,9 @@ def verify_office_variable_metadata(font: TTFont) -> list[str]:
         for tag in custom_tags
     ):
         errors.append("STAT custom axes must precede registered axes")
-    for left, right in zip(present_canonical_tags, present_canonical_tags[1:]):
+    for left, right in zip(
+        present_canonical_tags, present_canonical_tags[1:], strict=False
+    ):
         if ordering_by_tag[left] >= ordering_by_tag[right]:
             errors.append(f"STAT axis ordering must place {left} before {right}")
 

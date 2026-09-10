@@ -24,9 +24,9 @@ hand over an already-parsed font object; each application has its own loader.
 """
 
 from font_family_model.family import (
+    compose_family,
     parse_style_attributes,
     split_style_name,
-    compose_family,
 )
 from font_family_model.names import (
     StaticFamilyNames,

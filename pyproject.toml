@@ -37,3 +37,26 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# The rules that catch defects rather than style: pyflakes finds dead code and
+# undefined names, bugbear the traps that look correct. The wider set the
+# sibling package uses (ANN, UP, N) reports 171 findings here, nearly all of
+# them missing annotations in code written before it had any -- worth doing,
+# but as its own change rather than smuggled into a release.
+select = ["E9", "F", "B", "I"]
+
+[tool.mypy]
+python_version = "3.10"
+# Checked as source rather than as an installed package: there is no py.typed
+# marker, because the package does not yet claim to ship types -- most of
+# variable.py predates the annotations.
+files = ["src/font_family_model"]
+# Not strict for the same reason, plus: variable.py speaks to fontTools table
+# objects, which ship no stubs, so strict mode would be a wall of Any
+# complaints rather than a check.
+ignore_missing_imports = true

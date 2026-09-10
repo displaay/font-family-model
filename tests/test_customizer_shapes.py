@@ -17,7 +17,6 @@ from __future__ import annotations
 import pytest
 from fontTools.fontBuilder import FontBuilder
 from fontTools.pens.ttGlyphPen import TTGlyphPen
-from fontTools.ttLib import TTFont
 
 from font_family_model import variable as vf
 
@@ -289,7 +288,7 @@ class TestAxisValuesPerExportedFile:
 
     @staticmethod
     def _gsfont_with_two_exports():
-        glyphslib = pytest.importorskip("glyphsLib")
+        pytest.importorskip("glyphsLib")
         from glyphsLib.classes import GSCustomParameter, GSFont, GSInstance
 
         font = GSFont()

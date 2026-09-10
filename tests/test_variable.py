@@ -6,11 +6,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from _helpers import make_minimal_ttf
 from fontTools.ttLib import TTFont, newTable
 from fontTools.ttLib.tables import otTables
 from fontTools.ttLib.tables._f_v_a_r import Axis, NamedInstance
 
-from _helpers import make_minimal_ttf
 from font_family_model import variable as vf_post
 
 
@@ -22,7 +22,12 @@ def _write_variable_glyphs_source(
     axis_values_list: list[str] | None = None,
 ) -> None:
     try:
-        from glyphsLib.classes import GSCustomParameter, GSFont, GSInstance, InstanceType
+        from glyphsLib.classes import (
+            GSCustomParameter,
+            GSFont,
+            GSInstance,
+            InstanceType,
+        )
     except ImportError as exc:  # pragma: no cover - optional test dependency
         raise unittest.SkipTest("glyphsLib is required") from exc
 
