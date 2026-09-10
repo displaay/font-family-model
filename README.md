@@ -43,9 +43,10 @@ font = postprocess_variable_font(TTFont("FamilyVF.ttf"))
 font.save("FamilyVF.ttf")
 ```
 
-The rebase builds a new object, so **use the return value** — the argument may
-be left untouched. There is a file entry point too, which compiles the
-candidate to a sibling temporary file, verifies it, and only then swaps it in:
+The rebase builds a new object, so **use the return value** — the font you
+passed in is not the one that comes back. There is a file entry point too,
+which compiles the candidate to a sibling temporary file, verifies it, and only
+then swaps it in:
 
 ```python
 from font_family_model import postprocess_variable_font_file
