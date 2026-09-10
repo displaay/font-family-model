@@ -1,0 +1,26 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+        # 4.62.1 is the floor the rebase needs; the upper end of the 4.x series
+        # is tested too because instantiateVariableFont and the STAT builders
+        # are exactly what moves under a fontTools bump.
+        fonttools: ["==4.62.*", "<5"]
+    name: py${{ matrix.python }} fontTools${{ matrix.fonttools }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "${{ matrix.python }}"
+      - run: pip install -e ".[test]" "fonttools${{ matrix.fonttools }}"
+      - run: pytest -q
