@@ -207,6 +207,43 @@ reader prefers. **Variable fonts are the exception** and keep their Mac
 duplicates: there they are what an application reads when it cannot see the
 `fvar` model, and `variable` keeps them in step on purpose.
 
+### What the model may respell, and what it may not
+
+`static_family_names` reads a style as *attributes*, not as words, and where
+it recognises every token it may say them back in their canonical spelling:
+`Semibold` becomes `SemiBold`, `Ultra Black` becomes `ExtraBlack`. That is
+what makes one face spell its weight the same way in the font menu and in the
+PostScript name.
+
+Where it does **not** recognise a token, the token survives in `non_wws` and
+the model is describing something it only partly understands. It still answers
+correctly — `non_wws` is exactly what the WWS pair exists to carry — but a
+caller whose input is a *name someone chose* rather than a description of a
+style must not let it respell or decompose that name:
+
+| style | `non_wws` | 1 | 2 | 17 |
+|---|---|---|---|---|
+| `Extra Bold` | — | `Fam ExtraBold` | `Regular` | `ExtraBold` |
+| `S-Light` | `S` | `Fam S Light` | `Regular` | `S Light` |
+| `S-Bold` | `S` | `Fam S` | `Bold` | `S Bold` |
+| `UU` | `UU` | `Fam UU` | `Regular` | `UU Regular` |
+
+Three things happen to `S-Bold` there, and only the first two are cosmetic:
+the hyphen becomes a space, an unrecognised style gains the `Regular` it never
+claimed, and — the one that matters — the name is **cut in half** at a weight
+word it happens to contain, filing it as the Bold of a family called `Fam S`
+and stranding the `S-Light` and `S-SemiBold` it belongs with.
+
+**`is_wws_conformant` is the boundary.** True means every token was
+recognised and the model's spelling is safe to write. False means the style
+carries something the model did not parse, and a caller holding an authored
+label should treat that label as one opaque token: keep it verbatim in
+`name` 1, 4, 6, 16 and 17, and take from the model only the answers that
+carry no text — `name` 2, the RIBBI and WWS bits, the width class, the unique
+identifier. The Displaay Customizer does exactly that, because its styles come
+from a customer's name convention; the Font Builder does not need to, because
+its styles are the instance names in the `.glyphs` source.
+
 ## Modules
 
 - **`variable`** — the pass and its two validators
