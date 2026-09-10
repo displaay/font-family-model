@@ -282,3 +282,56 @@ class TestCustomAxis:
             "different things in different axis contexts")
         # the custom axis label must survive into the composed names
         assert "Mono Regular" in instances(font)
+
+
+class TestAxisValuesPerExportedFile:
+    """A source can export several variable fonts, each with its own labels."""
+
+    @staticmethod
+    def _gsfont_with_two_exports():
+        glyphslib = pytest.importorskip("glyphsLib")
+        from glyphsLib.classes import GSCustomParameter, GSFont, GSInstance
+
+        font = GSFont()
+        font.familyName = "Fam"
+        for stem, code in (("Fam-Uprights-VF", "wght; 400=Regular*"),
+                           ("Fam-Italics-VF", "wght; 400=Italic*")):
+            instance = GSInstance()
+            instance.name = stem
+            instance.type = 1                       # InstanceType.VARIABLE
+            instance.customParameters.append(GSCustomParameter("fileName", stem))
+            instance.customParameters.append(GSCustomParameter("Axis Values", code))
+            font.instances.append(instance)
+        return font
+
+    def test_the_file_stem_picks_the_matching_setting(self):
+        # the two settings differ only in what they call wght=400, so the wrong
+        # one is silently wrong rather than an error
+        gsfont = self._gsfont_with_two_exports()
+        italics = run(build_vf("Fam VF", [
+            ("Light", {"wght": 300}), ("Bold", {"wght": 700})],
+            ps_prefix="FamItalicsVF"))
+        codes = vf.resolve_stat_axis_value_codes_from_font(
+            italics, font_stem="Fam-Italics-VF", gsfont=gsfont)
+        assert "400=Italic*" in codes.explicit[0][1]
+
+    def test_a_postscript_name_never_matches_a_file_name(self):
+        # the regression: nameID 6 was passed where the export stem belongs, so
+        # the match could not succeed and every font took the first setting
+        gsfont = self._gsfont_with_two_exports()
+        font = run(build_vf("Fam VF", [
+            ("Light", {"wght": 300}), ("Bold", {"wght": 700})],
+            ps_prefix="FamItalicsVF"))
+        wrong = vf.resolve_stat_axis_value_codes_from_font(
+            font, font_stem=font["name"].getDebugName(6), gsfont=gsfont)
+        right = vf.resolve_stat_axis_value_codes_from_font(
+            font, font_stem="Fam-Italics-VF", gsfont=gsfont)
+        assert wrong.explicit != right.explicit, (
+            "a PostScript name must not accidentally select a setting")
+
+    def test_font_stem_is_keyword_only(self):
+        # it used to be the second positional, where an older caller passed
+        # `source`; binding None there was falsy and fell back silently
+        font = run(build_vf("Fam VF", [("Light", {"wght": 300})]))
+        with pytest.raises(TypeError):
+            vf.resolve_stat_axis_value_codes_from_font(font, "Fam-Italics-VF")

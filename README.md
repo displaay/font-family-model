@@ -55,8 +55,13 @@ postprocess_variable_font_file(Path("FamilyVF.ttf"), log=print)
 
 It **fails closed**. A font whose names, `fvar` and STAT cannot be made to
 agree raises rather than shipping metadata that one application reads one way
-and another reads differently. The original file is left byte-for-byte
-unchanged.
+and another reads differently.
+
+The raise is the guarantee; the argument is not. `postprocess_variable_font`
+edits the font it is given along the way, so a caller that catches the error
+must discard it rather than fall back to it. The *file* entry point is the one
+that leaves its input byte-for-byte unchanged, because it only swaps in a
+temporary file that already passed verification.
 
 ## What a processed font looks like
 

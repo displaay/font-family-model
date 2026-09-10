@@ -1763,14 +1763,19 @@ def _supplemented_axes(
 
 def resolve_stat_axis_value_codes_from_font(
     font: TTFont,
-    font_stem: str = "",
     *,
+    font_stem: str = "",
     explicit: tuple[tuple[str, str], ...] | None = None,
     gsfont=None,
     default_axis_value_codes: tuple[tuple[str, str], ...] | None = None,
 ) -> ResolvedStatAxisValueCodes:
     """Resolve explicit Axis Values and fill missing axes/coordinates from fvar.
 
+    :param font_stem: The stem of the file being written, matched against the
+        ``fileName`` custom parameter so a source exporting several variable
+        fonts gives each its own ``Axis Values``. Keyword-only, and never the
+        PostScript name: those never match a fileName, and an unmatched stem
+        falls back to the first setting that has any codes at all.
     :param explicit: ``Axis Values`` parameters already read from the source.
     :param gsfont: An already-parsed Glyphs font to read them from instead,
         when ``explicit`` is not given.
@@ -3051,6 +3056,7 @@ def postprocess_variable_font(
     *,
     axis_value_codes: tuple[tuple[str, str], ...] | None = None,
     gsfont=None,
+    font_stem: str = "",
     log: LogCallback | None = None,
 ) -> TTFont:
     """Rebase one variable font onto its Office default and rebuild its STAT.
@@ -3065,12 +3071,20 @@ def postprocess_variable_font(
 
     Fails closed: a font whose names, ``fvar`` and STAT cannot be made to agree
     raises rather than shipping metadata that one application reads one way and
-    another reads differently.
+    another reads differently. The raise is the guarantee - the *argument* is
+    not. It is edited along the way, so a caller that catches the error must
+    discard the font rather than fall back to it.
+    :func:`postprocess_variable_font_file` is the one that leaves its input
+    untouched, because it swaps a verified temporary file into place.
 
     :param axis_value_codes: ``Axis Values`` parameters in the Glyphs syntax.
         Synthesized from the ``fvar`` named instances when omitted.
     :param gsfont: An already-parsed Glyphs font to read those parameters from
         instead. The package never opens a ``.glyphs`` file itself.
+    :param font_stem: The stem of the file being written. Only meaningful with
+        ``gsfont``, where it picks the matching ``fileName`` setting; without
+        it a source that exports both an Uprights and an Italics VF would give
+        both the first setting's axis values.
     :returns: The postprocessed font. The rebase builds a new object, so the
         return value matters; the argument may be left untouched.
     """
@@ -3092,7 +3106,7 @@ def postprocess_variable_font(
 
     resolved = resolve_stat_axis_value_codes_from_font(
         font,
-        name,
+        font_stem=font_stem,
         explicit=axis_value_codes,
         gsfont=gsfont,
         default_axis_value_codes=pre_rebase_defaults,
@@ -3134,12 +3148,22 @@ def postprocess_variable_font_file(
     ambiguous font leaves the original byte-for-byte unchanged.
     """
     font = TTFont(font_path)
+    processed = None
     try:
         processed = postprocess_variable_font(
-            font, axis_value_codes=axis_value_codes, gsfont=gsfont, log=log)
+            font,
+            axis_value_codes=axis_value_codes,
+            gsfont=gsfont,
+            font_stem=font_path.stem,
+            log=log,
+        )
         if processed is not font:
             font.close()
             font = processed
         _save_verified_font_atomically(font, font_path)
     finally:
+        # a rebase builds a second font; if the pass raised after that, both
+        # are open and only closing the original would leak a descriptor
+        if processed is not None and processed is not font:
+            processed.close()
         font.close()
