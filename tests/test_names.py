@@ -12,6 +12,7 @@ from font_family_model.names import (
     HEAD_MACSTYLE_BOLD,
     HEAD_MACSTYLE_ITALIC,
     apply_ribbi_bits,
+    apply_width_class,
     apply_wws_bit,
     collapse_spaces,
     legacy_family_and_subfamily,
@@ -380,3 +381,63 @@ class TestStripMacintoshNameRecords:
         font = self.make_font()
         strip_macintosh_name_records(font)
         assert strip_macintosh_name_records(font) == 0
+
+
+class TestWidthClass:
+    def make_font(self, width_class=5):
+        from fontTools.ttLib import TTFont, newTable
+
+        font = TTFont()
+        font["OS/2"] = newTable("OS/2")
+        font["OS/2"].usWidthClass = width_class
+        return font
+
+    @pytest.mark.parametrize(
+        ("style", "expected"),
+        [
+            ("UltraCondensed Bold", 1),
+            ("ExtraCondensed Regular", 2),
+            ("Condensed Bold", 3),
+            ("Narrow Regular", 3),
+            ("Compact Light", 3),
+            ("SemiCondensed Regular", 4),
+            ("SemiExpanded Bold", 6),
+            ("Expanded Thin", 7),
+            ("Extended Thin", 7),
+            ("Wide Light", 7),
+            ("ExtraExpanded Bold", 8),
+            ("UltraExpanded Black", 9),
+        ],
+    )
+    def test_the_width_the_style_names(self, style, expected):
+        assert static_family_names(FAMILY, style).width_class == expected
+
+    @pytest.mark.parametrize("style", ["Regular", "Bold Italic", "SemiBold", "Mono Bold"])
+    def test_a_style_that_names_no_width_carries_none(self, style):
+        assert static_family_names(FAMILY, style).width_class is None
+
+    def test_the_field_is_written(self):
+        font = self.make_font(width_class=5)
+        model = static_family_names(FAMILY, "Condensed Bold")
+        assert apply_width_class(font, model) == 3
+        assert font["OS/2"].usWidthClass == 3
+
+    def test_a_style_with_no_width_leaves_the_source_value_alone(self):
+        # The value the source gave is the only evidence there is.
+        font = self.make_font(width_class=4)
+        assert apply_width_class(font, static_family_names(FAMILY, "Bold")) is None
+        assert font["OS/2"].usWidthClass == 4
+
+    def test_the_style_wins_over_the_source(self):
+        # A .glyphs source with a width axis has no reason to declare the
+        # field, and ufo2ft then defaults every instance to 5 - so a family's
+        # Condensed, Standard and Extended faces all claim to be 100% wide.
+        font = self.make_font(width_class=5)
+        apply_width_class(font, static_family_names(FAMILY, "Extended Bold"))
+        assert font["OS/2"].usWidthClass == 7
+
+    def test_a_font_without_os2_is_not_an_error(self):
+        from fontTools.ttLib import TTFont
+
+        assert apply_width_class(
+            TTFont(), static_family_names(FAMILY, "Condensed Bold")) is None

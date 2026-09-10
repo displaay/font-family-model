@@ -31,6 +31,7 @@ from font_family_model.family import (
 from font_family_model.names import (
     StaticFamilyNames,
     apply_ribbi_bits,
+    apply_width_class,
     apply_wws_bit,
     collapse_spaces,
     legacy_family_and_subfamily,
@@ -62,6 +63,7 @@ __all__ = [
     "compose_family",
     "StaticFamilyNames",
     "apply_ribbi_bits",
+    "apply_width_class",
     "apply_wws_bit",
     "collapse_spaces",
     "legacy_family_and_subfamily",

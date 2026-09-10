@@ -32,7 +32,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .family import compose_family, parse_style_attributes
+from .family import (
+    WIDTH_NAME_TO_OS2_WIDTH_CLASS,
+    compose_family,
+    parse_style_attributes,
+)
 
 #: The four faces a single legacy family can hold.
 RIBBI_STYLES = ("Regular", "Italic", "Bold", "Bold Italic")
@@ -209,6 +213,9 @@ class StaticFamilyNames:
     #: True exactly when :attr:`wws_family` is None - the two are the same
     #: statement made in the two places a reader might look.
     is_wws_conformant: bool
+    #: ``OS/2.usWidthClass``, 1 (UltraCondensed) to 9 (UltraExpanded), or None
+    #: when the style names no width and the value the source gave stands.
+    width_class: int | None = None
 
     @property
     def is_italic(self) -> bool:
@@ -266,6 +273,8 @@ def static_family_names(family: str, subfamily: str) -> StaticFamilyNames:
         wws_family=wws_family,
         wws_subfamily=wws_subfamily,
         is_wws_conformant=attrs.is_wws_conformant,
+        width_class=WIDTH_NAME_TO_OS2_WIDTH_CLASS.get(attrs.width) if attrs.width
+        else None,
     )
 
 
@@ -380,3 +389,27 @@ def strip_macintosh_name_records(font) -> int:
         record for record in name_table.names if record.platformID != 1
     ]
     return before - len(name_table.names)
+
+
+def apply_width_class(font, model: StaticFamilyNames) -> int | None:
+    """Write ``OS/2.usWidthClass`` from the width the style names.
+
+    The field is 1 (UltraCondensed) to 9 (UltraExpanded), and Windows reads it
+    when it matches faces into a family and when it picks a fallback. A source
+    that carries a width *axis* does not necessarily declare the field: Glyphs
+    has no reason to, glyphsLib then leaves ``openTypeOS2WidthClass`` unset and
+    ufo2ft defaults every instance to 5. A family's Condensed, Standard and
+    Extended faces all ship claiming to be 100% wide.
+
+    So the width is taken from the style, which is the one place it is always
+    written down. A style that names no width is left alone - there the value
+    the source gave is the only evidence there is.
+
+    :param font: A ``TTFont`` with ``OS/2``.
+    :param model: The face's :class:`StaticFamilyNames`.
+    :returns: The value written, or None when nothing was.
+    """
+    if model.width_class is None or "OS/2" not in font:
+        return None
+    font["OS/2"].usWidthClass = model.width_class
+    return model.width_class
