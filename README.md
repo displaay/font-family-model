@@ -100,20 +100,66 @@ format 4, the other is handed the body of a request — and a second reader here
 would be a second answer to what one file says. It also keeps `glyphsLib` out
 of the runtime dependencies entirely.
 
+## The legacy family, and why there are two rules
+
+`name` ID 16/17 says what a family really is. `name` ID 1/2 is what an
+application that predates the typographic model reads, and it can only hold
+four faces — Regular, Italic, Bold, Bold Italic. Everything else has to be
+split into a legacy family of its own, and *where* the split falls is a
+decision, not a calculation.
+
+The two tools answer it differently, and `names` holds both:
+
+```python
+from font_family_model import legacy_family_name, legacy_family_and_subfamily
+
+legacy_family_name("Cassette", "Condensed Bold")          # 'Cassette Condensed Bold'
+legacy_family_and_subfamily("Cassette", "Condensed Bold") # ('Cassette Condensed', 'Bold')
+```
+
+| style | `legacy_family_name` | `legacy_family_and_subfamily` |
+|---|---|---|
+| `Bold Italic` | `Cassette` | `Cassette` / `Bold Italic` |
+| `Thin Italic` | `Cassette Thin` | `Cassette Thin` / `Italic` |
+| `Semibold` | `Cassette Semibold` | `Cassette SemiBold` / `Regular` |
+| `Extra Light Italic` | `Cassette Extra Light` | `Cassette ExtraLight` / `Italic` |
+| `Condensed Bold` | `Cassette Condensed Bold` | `Cassette Condensed` / `Bold` |
+| `Mono Bold Italic` | `Cassette Mono Bold` | `Cassette Mono` / `Bold Italic` |
+
+Two differences, both load-bearing:
+
+**Spelling.** The Office rule normalizes a weight onto its canonical OpenType
+spelling. The Customizer must not: a customer orders a family under a name
+convention they chose, and the weight spelling in the source is part of it.
+Rewriting `Semibold` to `SemiBold` would rename faces that are already
+installed.
+
+**Where the quad forms.** The Office rule builds a genuine RIBBI quad inside
+each width — `Cassette Condensed` holding Regular, Italic, Bold and Bold Italic
+— which is what the model asks for and what lets Word compose Bold Italic from
+the Bold button rather than list a separate face. The Customizer rule gives
+every compound style its own legacy family, which keeps macOS from labelling
+`Condensed Regular Italic` as a bare `Italic` in the font picker.
+
+Adopting either rule in the other tool would move ID 1 and ID 2 on faces that
+have already shipped. They live side by side, and the tests pin the
+divergence, so that closing it stays a decision someone makes on purpose.
+
 ## Modules
 
 - **`variable`** — the pass and its two validators
   (`verify_office_variable_metadata`, `verify_stat_covers_fvar`)
 - **`family`** — splitting and composing family and style names: weight
   spellings, italic suffixes, width families, collections
-- **`names`** — `name` record helpers
+- **`names`** — the static side: the legacy family under each rule, and
+  `name` record helpers
 
 ## Install
 
 Released through GitHub Releases, not PyPI:
 
 ```
-font-family-model @ https://github.com/displaay/font-family-model/releases/download/v0.1.0/font_family_model-0.1.0-py3-none-any.whl
+font-family-model @ https://github.com/displaay/font-family-model/releases/download/v0.2.0/font_family_model-0.2.0-py3-none-any.whl
 ```
 
 `fontTools >= 4.62.1` is a floor, not a preference: `instantiateVariableFont`

@@ -15,7 +15,8 @@ that a font exported by either describes itself the same way.
   instances, and verifies the result. Fails closed.
 - :mod:`font_family_model.family` splits and composes family and style names -
   weight spellings, italic suffixes, width families, collections.
-- :mod:`font_family_model.names` holds ``name`` record helpers.
+- :mod:`font_family_model.names` holds the static side: the legacy family
+  (``name`` ID 1/2) under each tool's rule, and the ``name`` record helpers.
 
 The package never reads a ``.glyphs`` file. Callers that have source metadata
 hand over an already-parsed font object; each application has its own loader.
@@ -26,7 +27,12 @@ from font_family_model.family import (
     split_style_name,
     compose_family,
 )
-from font_family_model.names import mac_roman_encodable
+from font_family_model.names import (
+    collapse_spaces,
+    legacy_family_and_subfamily,
+    legacy_family_name,
+    mac_roman_encodable,
+)
 from font_family_model.variable import (
     postprocess_variable_font,
     postprocess_variable_font_file,
@@ -35,7 +41,7 @@ from font_family_model.variable import (
     verify_stat_covers_fvar,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "postprocess_variable_font",
@@ -46,6 +52,9 @@ __all__ = [
     "parse_style_attributes",
     "split_style_name",
     "compose_family",
+    "collapse_spaces",
+    "legacy_family_and_subfamily",
+    "legacy_family_name",
     "mac_roman_encodable",
     "__version__",
 ]
