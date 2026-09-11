@@ -344,13 +344,13 @@ def _width_gsfont(styles, *, variable=(), family="Greed"):
 
 class IsVariableInstanceTests(unittest.TestCase):
     def test_the_glyphslib_enum_is_recognised(self):
-        # InstanceType is an IntEnum; on Python 3.11 its str() is "1", so a
-        # test on the name misses every variable setting
+        # InstanceType is an IntEnum; from Python 3.11 its str() is "1", so a
+        # test on the name misses every variable setting there
         from glyphsLib.classes import GSInstance, InstanceType
 
         instance = GSInstance()
         instance.type = InstanceType.VARIABLE
-        self.assertEqual(str(instance.type), "1")
+        self.assertIn(str(instance.type), ("1", "InstanceType.VARIABLE"))
         self.assertTrue(split.is_variable_instance(instance))
         instance.type = InstanceType.SINGLE
         self.assertFalse(split.is_variable_instance(instance))

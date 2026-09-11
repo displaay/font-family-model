@@ -726,7 +726,7 @@ def is_variable_instance(instance) -> bool:
     glyphsLib's ``InstanceType.VARIABLE`` is 1, but the enum is not imported:
     the package must not depend on glyphsLib just to read one attribute, and a
     caller may hand over any object with the same shape. It is an ``IntEnum``,
-    so its ``str()`` is ``"1"`` on Python 3.11 - comparing names does not work.
+    so from Python 3.11 its ``str()`` is ``"1"`` - comparing names does not work.
     An instance carrying ``Axis Values`` is a variable setting too.
     """
     instance_type = getattr(instance, "type", 0)

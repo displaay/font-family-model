@@ -139,7 +139,7 @@ A source lists its variable-font settings as instances too, often named like a
 static at another width - Panell's variable `Regular` sits at wdth 100 next to
 the static `Regular` at 103. `family.is_variable_instance` tells them apart;
 note that glyphsLib's `InstanceType` is an `IntEnum`, whose `str()` is `"1"`
-on Python 3.11, so comparing names finds none.
+from Python 3.11 on, so comparing names finds none.
 
 Each application already has its own loader — one decodes MacRoman and converts
 format 4, the other is handed the body of a request — and a second reader here
