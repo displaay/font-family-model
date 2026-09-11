@@ -6,7 +6,20 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from fontTools.misc.roundTools import otRound
 from fontTools.ttLib import TTFont
+from fontTools.varLib import WDTH_VALUE_TO_OS2_WIDTH_CLASS
+from fontTools.varLib.models import piecewiseLinearMap
+
+#: Weight names a foundry uses outside the OpenType vocabulary. They are
+#: positions on the wght axis like any other weight, so they are read as one:
+#: without an entry here the model takes the word for a non-WWS attribute and
+#: gives the face a WWS family (``name`` ID 21) that does not exist.
+#:
+#: ``Lazer`` is Documan's lightest weight, at wght 100 below Thin.
+FOUNDRY_WEIGHT_NAMES = {
+    "lazer": "Lazer",
+}
 
 # Canonical OpenType-ish spellings first; spaced aliases share the same casefold.
 _WEIGHT_CANONICAL_BY_FOLD = {
@@ -40,6 +53,7 @@ _WEIGHT_CANONICAL_BY_FOLD = {
     "extra black": "ExtraBlack",
     "ultrablack": "ExtraBlack",
     "ultra black": "ExtraBlack",
+    **FOUNDRY_WEIGHT_NAMES,
 }
 
 WEIGHT_LABELS = tuple(
@@ -150,6 +164,21 @@ WIDTH_NAME_TO_OS2_WIDTH_CLASS = {
     "ExtraExpanded": 8,
     "UltraExpanded": 9,
 }
+
+#: Width words that set ``OS/2.usWidthClass`` without being parsed as a width.
+#:
+#: ``Compressed`` is the narrowest width of Fenul and Serrif, next to their
+#: ``Condensed``. Read as a width token it would make every sibling family
+#: suffix of those sources a width, and :func:`empty_family_suffix_label` would
+#: then rename their default-width faces ``Serrif Regular``. Only the width
+#: class needs to know it.
+WIDTH_CLASS_ONLY_NAMES = {
+    "Compressed": 2,
+}
+
+_WIDTH_CLASS_LABELS = tuple(
+    sorted({*WIDTH_LABELS, *WIDTH_CLASS_ONLY_NAMES}, key=len, reverse=True)
+)
 
 
 @dataclass(frozen=True)
@@ -296,6 +325,53 @@ def _match_width(base: str) -> tuple[str, str] | None:
         return None
     width_token, remainder = matched
     return _canonical_width(width_token), remainder
+
+
+def width_class_for_wdth(value: float) -> int:
+    """The ``OS/2.usWidthClass`` a ``wdth`` coordinate stands for.
+
+    The 'wdth' axis is registered in percent of the normal width, and the OS/2
+    spec gives every width class its percentage: 1 = 50 %, 2 = 62.5 %, 3 = 75 %,
+    4 = 87.5 %, 5 = 100 %, 6 = 112.5 %, 7 = 125 %, 8 = 150 %, 9 = 200 %. Between
+    two of them the class is interpolated and rounded, which is how fontTools
+    sets it for a variable font's default - so a static face and a variable
+    font pinned at the same width say the same thing.
+
+    This is the rule, and a width *word* is not: "Condensed" is 50 % in one
+    family and 75 % in another, and only the coordinate knows which.
+
+    :param value: The face's user coordinate on the 'wdth' axis. Values
+        outside 50-200 are clamped.
+    """
+    value = min(max(float(value), 50.0), 200.0)
+    return otRound(piecewiseLinearMap(value, WDTH_VALUE_TO_OS2_WIDTH_CLASS))
+
+
+def width_class_named_in(text: str) -> int | None:
+    """The ``OS/2.usWidthClass`` a width word anywhere in ``text`` stands for.
+
+    Only a fallback, for a face whose source has no 'wdth' axis to read the
+    width from (:func:`width_class_for_wdth`).
+
+    Unlike the style parser this looks at every word, not only the ends: a
+    name convention files the width with the family, and there it sits in the
+    middle as often as not (``Reckless Condensed S``). Words that are only
+    meaningful as a width class (:data:`WIDTH_CLASS_ONLY_NAMES`) count too.
+
+    :param text: A family or style name.
+    :returns: The width class, or None when no word in ``text`` names one.
+    """
+    folded = f" {normalize_style_name(text or '').casefold()} "
+    for label in _WIDTH_CLASS_LABELS:
+        if f" {label.casefold()} " not in folded:
+            continue
+        canonical = _canonical_width(label)
+        width_class = WIDTH_NAME_TO_OS2_WIDTH_CLASS.get(
+            canonical, WIDTH_CLASS_ONLY_NAMES.get(canonical)
+        )
+        if width_class is not None:
+            return width_class
+    return None
 
 
 def parse_style_attributes(style: str) -> StyleAttributes:
@@ -464,23 +540,13 @@ def multi_family_split_decision(
     inspected_glyphs = False
     if gsfont is not None:
         try:
-            font = gsfont
             inspected_glyphs = True
-            for instance in getattr(font, "instances", []) or []:
-                if not getattr(instance, "exports", True):
-                    continue
-                if hasattr(instance, "active") and not instance.active:
-                    continue
-                name = str(getattr(instance, "name", None) or "")
-                if name:
-                    names.append(name)
-                instance_family = (
-                    getattr(instance, "familyName", None)
-                    or getattr(instance, "preferredFamilyName", None)
-                    or getattr(instance, "preferredFamily", None)
-                )
-                if instance_family:
-                    family_overrides.add(" ".join(str(instance_family).split()))
+            # the statics only: a variable-font setting is not a family member
+            for instance in static_instances_from_gsfont(gsfont):
+                if instance.name:
+                    names.append(instance.name)
+                if instance.family_name:
+                    family_overrides.add(instance.family_name)
         except ImportError:
             pass
         except Exception:
@@ -569,6 +635,25 @@ def variable_font_family_suffixes(font: TTFont) -> set[str]:
     }
 
 
+def family_instance_styles(font: TTFont, base_family: str, family: str) -> dict[str, str]:
+    """``{fvar instance name: its style in family}`` for one family of a collection VF.
+
+    What :func:`~font_family_model.variable.family_variable_font` takes to
+    name a family's variable font like its statics: ``Condensed Thin`` is the
+    ``Thin`` of ``Greed Condensed`` (:func:`instance_family_and_style`, with
+    every instance of the collection as the siblings). Instances of other
+    families are not listed, so they are dropped.
+    """
+    names = _fvar_instance_style_names(font)
+    siblings = [split_style_name(name)[0] for name in names]
+    styles: dict[str, str] = {}
+    for name in names:
+        instance_family, style = instance_family_and_style(base_family, name, siblings)
+        if instance_family == family:
+            styles[name] = style
+    return styles
+
+
 def width_suffix_to_default_wdth(family_suffix: str) -> float | None:
     """Fallback wdth from a known width token when fvar instances are ambiguous."""
     suffix = normalize_family_suffix(family_suffix)
@@ -606,6 +691,257 @@ def family_from_instance_fields(
         base_family,
         normalize_family_suffix(family_suffix, sibling_suffixes),
     )
+
+
+def instance_family_and_style(
+    base_family: str,
+    style_name: str,
+    sibling_suffixes: Iterable[str] = (),
+) -> tuple[str, str]:
+    """The family a compound instance name belongs to, and its style there.
+
+    ``Condensed Bold`` in ``Greed`` is the ``Bold`` of ``Greed Condensed``: the
+    split a static face takes when a width collection is delivered as one
+    family per width, and the one its variable font has to take too.
+
+    :param sibling_suffixes: The family suffixes of every instance in the
+        source; they decide whether a face with none belongs to the bare family
+        or to ``Regular`` (:func:`normalize_family_suffix`).
+    :returns: ``(family, style)``.
+    """
+    family_suffix, style = split_style_name(style_name)
+    return (
+        compose_family(base_family, normalize_family_suffix(family_suffix, sibling_suffixes)),
+        style,
+    )
+
+
+#: The Glyphs custom parameter holding a variable instance's STAT labels.
+AXIS_VALUES_PARAMETER_NAME = "Axis Values"
+
+
+def is_variable_instance(instance) -> bool:
+    """Whether a Glyphs instance is a variable-font setting, not a static.
+
+    glyphsLib's ``InstanceType.VARIABLE`` is 1, but the enum is not imported:
+    the package must not depend on glyphsLib just to read one attribute, and a
+    caller may hand over any object with the same shape. It is an ``IntEnum``,
+    so its ``str()`` is ``"1"`` on Python 3.11 - comparing names does not work.
+    An instance carrying ``Axis Values`` is a variable setting too.
+    """
+    instance_type = getattr(instance, "type", 0)
+    try:
+        if int(instance_type) == 1:
+            return True
+    except (TypeError, ValueError):
+        pass
+    if str(instance_type).endswith("VARIABLE") or instance_type == "variable":
+        return True
+    for parameter in getattr(instance, "customParameters", None) or []:
+        if parameter.name != AXIS_VALUES_PARAMETER_NAME:
+            continue
+        if getattr(parameter, "disabled", False):
+            continue
+        if parameter.value:
+            return True
+    return False
+
+
+@dataclass(frozen=True)
+class StaticInstance:
+    """One static instance a Glyphs source exports."""
+
+    #: The instance name, which a compiled static carries as ``name`` ID 17.
+    name: str
+    #: The instance's ``fontName``, which a compiled static carries as ``name``
+    #: ID 6 (with the spaces the compiler drops).
+    postscript_name: str
+    #: A family name set on the instance itself, or None.
+    family_name: str | None
+    #: Design coordinates by axis tag - the ones the outlines are drawn at.
+    coordinates: tuple[tuple[str, float], ...]
+
+    def coordinate(self, tag: str) -> float | None:
+        return dict(self.coordinates).get(tag)
+
+
+def static_instances_from_gsfont(gsfont) -> tuple[StaticInstance, ...]:
+    """The static instances a Glyphs source exports, in source order.
+
+    Variable-font settings are not statics, and are left out: a source lists
+    its VF setting as an instance too, usually named like a static at another
+    width (Panell's variable ``Regular`` sits at wdth 100 next to the static
+    ``Regular`` at 103). Neither are instances switched off for export.
+
+    Takes an already-parsed font, like
+    :func:`~font_family_model.variable.variable_font_settings_from_gsfont`:
+    the package never reads a ``.glyphs`` file itself.
+    """
+    if gsfont is None:
+        return ()
+    tags = [getattr(axis, "axisTag", None) for axis in getattr(gsfont, "axes", None) or []]
+    base_family = " ".join(str(getattr(gsfont, "familyName", None) or "").split())
+    statics: list[StaticInstance] = []
+    for instance in getattr(gsfont, "instances", None) or []:
+        if is_variable_instance(instance):
+            continue
+        if not getattr(instance, "exports", True):
+            continue
+        if hasattr(instance, "active") and not instance.active:
+            continue
+        name = str(getattr(instance, "name", None) or "")
+        coordinates: list[tuple[str, float]] = []
+        # by index, and an instance may list fewer coordinates than there are axes
+        values = list(getattr(instance, "axes", None) or [])
+        for tag, value in zip(tags, values, strict=False):
+            if not tag:
+                continue
+            try:
+                coordinates.append((str(tag), float(value)))
+            except (TypeError, ValueError):
+                continue
+        family_name = (
+            getattr(instance, "familyName", None)
+            or getattr(instance, "preferredFamilyName", None)
+            or getattr(instance, "preferredFamily", None)
+        )
+        postscript_name = getattr(instance, "fontName", None) or (
+            base_family.replace(" ", "") + "-" + name
+        )
+        statics.append(StaticInstance(
+            name=name,
+            postscript_name=str(postscript_name),
+            family_name=" ".join(str(family_name).split()) if family_name else None,
+            coordinates=tuple(coordinates),
+        ))
+    return tuple(statics)
+
+
+@dataclass(frozen=True)
+class StaticInstanceWidths:
+    """The wdth coordinate of each static instance, to find a compiled face's by.
+
+    Built by :func:`static_instance_widths`.
+    """
+
+    #: ``{PostScript name without spaces: wdth}``.
+    by_postscript_name: dict
+    #: ``{instance name: wdth}``; None for a name two instances share at two
+    #: widths - there is no telling which one a face is.
+    by_name: dict
+
+    def for_font(self, font: TTFont) -> float | None:
+        """The wdth a compiled static was drawn at, or None.
+
+        Found by ``name`` ID 6, which is the instance's ``fontName``, and
+        failing that by ``name`` ID 17, the instance name.
+        """
+        name_table = font["name"]
+        postscript_name = (name_table.getDebugName(6) or "").replace(" ", "")
+        if postscript_name in self.by_postscript_name:
+            return self.by_postscript_name[postscript_name]
+        style = (name_table.getDebugName(17) or name_table.getDebugName(2) or "").strip()
+        return self.by_name.get(style)
+
+
+def static_instance_widths(gsfont) -> StaticInstanceWidths:
+    """The design wdth coordinate of each static instance a source exports.
+
+    The design coordinate is the one the outlines are interpolated at, so it
+    is what :func:`width_class_for_wdth` has to describe. An instance's Axis
+    Location is not read - a source can get it wrong (a Standard and a Wide
+    instance of Reckless Italic both claim 50), and only the outlines are
+    evidence of the width. Both tools keep wdth 1:1, so it is the user
+    coordinate as well.
+
+    Empty when the source has no width axis: then the names are all there is
+    to go by.
+    """
+    by_postscript_name: dict[str, float] = {}
+    by_name: dict[str, float | None] = {}
+    for instance in static_instances_from_gsfont(gsfont):
+        wdth = instance.coordinate("wdth")
+        if wdth is None:
+            continue
+        by_postscript_name[instance.postscript_name.replace(" ", "")] = wdth
+        if instance.name in by_name and by_name[instance.name] != wdth:
+            by_name[instance.name] = None
+        else:
+            by_name.setdefault(instance.name, wdth)
+    return StaticInstanceWidths(by_postscript_name, by_name)
+
+
+def wdth_pins_from_gsfont(gsfont, base_family: str) -> dict[str, float]:
+    """``{family: wdth}`` for each family of a source that sits at one width.
+
+    A family is what :func:`family_from_instance_fields` makes of an instance
+    - the width token of its name, or a family name set on it. One whose
+    instances do not share a single coordinate gets no pin.
+    """
+    statics = static_instances_from_gsfont(gsfont)
+    sibling_suffixes = [split_style_name(instance.name or "Regular")[0] for instance in statics]
+    by_family: dict[str, list[float]] = {}
+    for instance in statics:
+        wdth = instance.coordinate("wdth")
+        if wdth is None:
+            continue
+        family = family_from_instance_fields(
+            base_family,
+            style_name=instance.name or "Regular",
+            instance_family=instance.family_name,
+            sibling_suffixes=sibling_suffixes,
+        )
+        by_family.setdefault(family, []).append(wdth)
+    pins: dict[str, float] = {}
+    for family, values in by_family.items():
+        unique = unique_coordinate(values)
+        if unique is not None:
+            pins[family] = unique
+    return pins
+
+
+def family_locations_from_gsfont(gsfont, base_family: str) -> dict[str, dict[str, float]]:
+    """``{family: {axis tag: coordinate}}`` on the axes that tell a source's families apart.
+
+    An axis is one of them when every family sits at a single coordinate on
+    it and the families do not all sit at the same one: Reckless' ``wdth``
+    and ``CNTR`` (``Condensed S`` is wdth 50, CNTR 10), not its ``wght``. A
+    family's variable font is the collection's pinned there - on every such
+    axis, or a family VF of Reckless keeps a CNTR axis its instances no longer
+    name (:func:`~font_family_model.variable.family_variable_font`).
+
+    Families are what :func:`family_from_instance_fields` makes of the
+    instances, as for :func:`wdth_pins_from_gsfont`.
+    """
+    statics = static_instances_from_gsfont(gsfont)
+    sibling_suffixes = [split_style_name(instance.name or "Regular")[0] for instance in statics]
+    by_family: dict[str, list[dict[str, float]]] = {}
+    for instance in statics:
+        family = family_from_instance_fields(
+            base_family,
+            style_name=instance.name or "Regular",
+            instance_family=instance.family_name,
+            sibling_suffixes=sibling_suffixes,
+        )
+        by_family.setdefault(family, []).append(dict(instance.coordinates))
+    tags = {tag for locations in by_family.values() for location in locations for tag in location}
+    family_axes: dict[str, dict[str, float]] = {}
+    for tag in sorted(tags):
+        per_family = {
+            family: unique_coordinate([location[tag] for location in locations if tag in location])
+            for family, locations in by_family.items()
+        }
+        values = [value for value in per_family.values() if value is not None]
+        if len(values) != len(per_family):
+            continue
+        if unique_coordinate(values) is not None:
+            # every family at the same coordinate: nothing to tell apart
+            continue
+        family_axes[tag] = dict(zip(per_family, values, strict=True))
+    return {
+        family: {tag: per_family[family] for tag, per_family in family_axes.items()}
+        for family in by_family
+    }
 
 
 def unique_coordinate(values: list[float]) -> float | None:

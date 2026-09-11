@@ -46,31 +46,28 @@ import os
 import re
 import stat
 import tempfile
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 import fontTools
 from fontTools.misc.fixedTools import fixedToFloat, floatToFixed
-from fontTools.misc.roundTools import otRound
 from fontTools.ttLib import TTFont, newTable
 from fontTools.ttLib.tables import otTables
 from fontTools.ttLib.tables._f_v_a_r import NamedInstance
-from fontTools.varLib import (
-    WDTH_VALUE_TO_OS2_WIDTH_CLASS,
-    set_default_weight_width_slant,
-)
+from fontTools.varLib import set_default_weight_width_slant
 from fontTools.varLib.instancer import instantiateVariableFont
-from fontTools.varLib.models import piecewiseLinearMap
 
 from font_family_model import family as family_name_split
-from font_family_model.names import mac_roman_encodable
+from font_family_model.family import width_class_for_wdth
+from font_family_model.names import mac_roman_encodable, unique_id
 
 _WEIGHT_LABELS = family_name_split.WEIGHT_LABELS
 _strip_italic_suffix = family_name_split.strip_italic_suffix
 _strip_weight_affix = family_name_split.strip_weight_affix
 
-AXIS_VALUES_PARAMETER_NAME = "Axis Values"
+AXIS_VALUES_PARAMETER_NAME = family_name_split.AXIS_VALUES_PARAMETER_NAME
 FALLBACK_WGHT_REGULAR = 400.0
 FALLBACK_WGHT_BOLD = 700.0
 DEFAULT_ITAL_UPRIGHT = 0.0
@@ -78,6 +75,11 @@ DEFAULT_ITAL_ITALIC = 1.0
 FIXED_FRACTION_BITS = 16
 STAT_ELIDABLE_AXIS_VALUE_NAME = 0x0002
 NO_NAME_ID = 0xFFFF
+#: Variations PostScript Name Prefix. The OT ``name`` spec restricts it to
+#: ASCII letters and digits, and Adobe TN #5902 builds every named instance's
+#: PostScript name from it.
+VARIATIONS_POSTSCRIPT_PREFIX_ID = 25
+_POSTSCRIPT_PREFIX_RE = re.compile(r"[A-Za-z0-9]+")
 CANONICAL_STAT_AXIS_ORDER = ("opsz", "wght", "wdth", "slnt", "ital")
 REGISTERED_NORMAL_COORDINATES = {
     "wght": 400.0,
@@ -119,28 +121,6 @@ class DefaultRebaseResult:
         )
 
 
-def _is_variable_font_setting(instance) -> bool:
-    instance_type = getattr(instance, "type", 0)
-    # glyphsLib's InstanceType.VARIABLE is 1, but the enum is not imported: the
-    # package must not depend on glyphsLib just to read one attribute, and a
-    # caller may hand over any object with the same shape.
-    try:
-        if int(instance_type) == 1:
-            return True
-    except (TypeError, ValueError):
-        pass
-    if str(instance_type).endswith("VARIABLE") or instance_type == "variable":
-        return True
-    for parameter in instance.customParameters:
-        if parameter.name != AXIS_VALUES_PARAMETER_NAME:
-            continue
-        if getattr(parameter, "disabled", False):
-            continue
-        if parameter.value:
-            return True
-    return False
-
-
 def variable_font_settings_from_gsfont(gsfont) -> tuple[VariableFontSetting, ...]:
     """Return exported variable-font settings and their Axis Values parameters.
 
@@ -155,7 +135,7 @@ def variable_font_settings_from_gsfont(gsfont) -> tuple[VariableFontSetting, ...
 
     settings: list[VariableFontSetting] = []
     for instance in getattr(gsfont, "instances", None) or []:
-        if not _is_variable_font_setting(instance):
+        if not family_name_split.is_variable_instance(instance):
             continue
         if not getattr(instance, "exports", True):
             continue
@@ -750,9 +730,26 @@ def _normalize_default_instance_names(
         labels[id(default_instances[0])] if default_instances else ""
     )
     name_17_current = _instance_subfamily_name(font, 17)
+    other_labels = {
+        labels[id(instance)]
+        for instance in font["fvar"].instances
+        if instance not in default_instances
+    }
+    candidates: tuple[str, ...]
+    if default_instances:
+        # the instance at the default names it. Name ID 17 may be left over
+        # from a font this one was cut from - a width family's VF says
+        # "Standard Regular" there, its collection's default
+        candidates = (authored_default,)
+    elif name_17_current in other_labels:
+        # the name of an instance at another location: Panell's origin is
+        # "Compressed Regular", and a default instance inserted under that
+        # name would be its duplicate
+        candidates = ()
+    else:
+        candidates = (name_17_current,)
     name_17_value = _office_default_instance_name(
-        authored_default,
-        name_17_current,
+        *candidates,
         office_subfamily=office_subfamily,
     )
     used_ids = {
@@ -796,26 +793,91 @@ def _normalize_default_instance_names(
 
 
 def _compact_postscript_token(value: str) -> str:
-    return "".join(character for character in value if character.isalnum())
+    # ASCII only: a PostScript name is printable ASCII, and a letter outside it
+    # - an accented or a Korean style name - cannot go into the record at all
+    return "".join(
+        character for character in value
+        if character.isascii() and character.isalnum()
+    )
 
 
-def _assign_fvar_instance_postscript_names(font: TTFont) -> int:
-    """Give every non-default fvar instance a unique PostScript name ID.
+def _variations_postscript_prefix(font: TTFont) -> str:
+    """Write the Variations PostScript Name Prefix (``name`` ID 25), return it.
 
-    Non-default instances use ``{name 6}-{compact subfamily}`` with spaces
-    removed, matching Glyphs named-instance PS names while preserving the Office
-    VF prefix. The all-axis-default instance is left without a PostScript name
-    (``0xFFFF``) and reuses name ID 17. The string on that ID is Regular or the
-    authored family-prefixed default (``Standard Regular``, ``Sans Regular``).
+    A prefix that is already in the repertoire is kept: it may say more than
+    the family name, which is how two files that share one family on purpose -
+    an Uprights and an Italics VF - keep their instance PostScript names
+    apart. Anything else, absent or spelled with a space the way a family name
+    is, gives way to ``name`` ID 6 reduced to the repertoire; a variable font's
+    ID 6 is that bare prefix already.
+
+    :returns: The prefix, or ``""`` when the font has nothing to derive it from.
+    """
+    current = _instance_subfamily_name(font, VARIATIONS_POSTSCRIPT_PREFIX_ID)
+    if _POSTSCRIPT_PREFIX_RE.fullmatch(current):
+        prefix = current
+    else:
+        prefix = (
+            _compact_postscript_token(_instance_subfamily_name(font, 6))
+            or _compact_postscript_token(_instance_subfamily_name(font, 4))
+        )
+    if prefix:
+        _add_office_name_records(font, VARIATIONS_POSTSCRIPT_PREFIX_ID, prefix)
+    return prefix
+
+
+def _name_id_references(font: TTFont) -> Counter:
+    """How many places in ``fvar`` and STAT point at each name ID."""
+    references: Counter = Counter()
+    if "fvar" in font:
+        for axis in font["fvar"].axes:
+            references[axis.axisNameID] += 1
+        for instance in font["fvar"].instances:
+            references[instance.subfamilyNameID] += 1
+            references[instance.postscriptNameID] += 1
+    if "STAT" in font:
+        stat_table = font["STAT"].table
+        references[getattr(stat_table, "ElidedFallbackNameID", None)] += 1
+        design_axes = getattr(stat_table, "DesignAxisRecord", None)
+        for axis in getattr(design_axes, "Axis", None) or []:
+            references[axis.AxisNameID] += 1
+        axis_values = getattr(stat_table, "AxisValueArray", None)
+        for axis_value in getattr(axis_values, "AxisValue", None) or []:
+            references[axis_value.ValueNameID] += 1
+    return references
+
+
+def _assign_fvar_instance_postscript_names(
+    font: TTFont,
+    prefix: str | None = None,
+) -> int:
+    """Give every non-default fvar instance the PostScript name its prefix implies.
+
+    Non-default instances are named ``{prefix}-{compact subfamily}``, the way
+    Adobe TN #5902 derives them, so the name an application generates for a
+    slider position is the one the font carries. The prefix is ``name`` ID 25
+    when the caller has settled it (:func:`_variations_postscript_prefix`),
+    else ``name`` ID 6. A record that already says something else is renamed
+    as well - an instance named ``Booton-Thin`` in a font whose prefix is
+    ``BootonVF`` is addressed by two different names depending on who asks.
+
+    A subfamily with nothing in the repertoire (a Korean style name) keeps
+    whatever PostScript name it had, since compacting would leave one constant
+    for every such instance. The all-axis-default instance is left without a
+    PostScript name (``0xFFFF``) and reuses name ID 17. The string on that ID is
+    Regular or the authored family-prefixed default (``Standard Regular``,
+    ``Sans Regular``).
     """
     if "fvar" not in font:
         return 0
-    prefix = _compact_postscript_token(_instance_subfamily_name(font, 6))
-    if not prefix:
-        prefix = _compact_postscript_token(_instance_subfamily_name(font, 4))
+    if prefix is None:
+        prefix = _compact_postscript_token(_instance_subfamily_name(font, 6))
+        if not prefix:
+            prefix = _compact_postscript_token(_instance_subfamily_name(font, 4))
     if not prefix:
         return 0
 
+    references = _name_id_references(font)
     used_ids = {
         instance.subfamilyNameID
         for instance in font["fvar"].instances
@@ -833,17 +895,136 @@ def _assign_fvar_instance_postscript_names(font: TTFont) -> int:
         if _locations_match(location, defaults):
             instance.postscriptNameID = NO_NAME_ID
             continue
-        ps_id = instance.postscriptNameID
-        if ps_id not in (0, NO_NAME_ID) and ps_id > 255:
-            continue
         subfamily = _instance_subfamily_name(font, instance.subfamilyNameID)
         compact = _compact_postscript_token(subfamily)
         if not compact:
             continue
         ps_name = f"{prefix}-{compact}"
+        ps_id = instance.postscriptNameID
+        if ps_id not in (0, NO_NAME_ID) and ps_id > 255:
+            if _instance_subfamily_name(font, ps_id) == ps_name:
+                continue
+            if references[ps_id] == 1:
+                # nothing else reads this record, so it can say the new name
+                # rather than be left behind unreferenced
+                _replace_name(font, ps_id, ps_name)
+                assigned += 1
+                continue
+        # an ID below 256 is a reserved name the 'fvar' spec does not allow
+        # here; it is never overwritten, the instance gets a record of its own
         instance.postscriptNameID = _allocate_name_id(font, ps_name, used_ids)
         assigned += 1
     return assigned
+
+
+def rename_fvar_instances(font: TTFont, styles) -> int:
+    """Rename a variable font's named instances, dropping the ones not wanted.
+
+    :param styles: ``{current subfamily: new subfamily}``, or a callable from
+        the current subfamily to the new one. An instance the mapping does not
+        list, or the callable answers None for, is removed.
+    :returns: How many instances were kept.
+
+    A subfamily record nothing else points to is rewritten in place, on every
+    platform; one that is shared, or below 256, is left alone and the instance
+    gets a record of its own. The instance PostScript names are not touched:
+    :func:`postprocess_variable_font` rebuilds them from the subfamily names
+    this leaves, and has to run afterwards anyway.
+    """
+    if "fvar" not in font:
+        return 0
+    lookup = styles if callable(styles) else styles.get
+    references = _name_id_references(font)
+    used_ids = {
+        instance.subfamilyNameID
+        for instance in font["fvar"].instances
+        if instance.subfamilyNameID > 255
+    }
+    kept = []
+    for instance in font["fvar"].instances:
+        current = _instance_subfamily_name(font, instance.subfamilyNameID)
+        new = lookup(current)
+        if not new:
+            continue
+        kept.append(instance)
+        if new == current:
+            continue
+        name_id = instance.subfamilyNameID
+        if name_id > 255 and references[name_id] == 1:
+            _replace_name(font, name_id, new)
+        else:
+            instance.subfamilyNameID = _allocate_name_id(font, new, used_ids)
+    font["fvar"].instances = kept
+    return len(kept)
+
+
+def family_variable_font(font: TTFont, location: dict, *, styles=None) -> TTFont:
+    """One family's variable font, cut from the variable font of a collection.
+
+    A width collection delivered as one family per width - ``Bagoss Condensed``,
+    ``Bagoss Standard``, ``Bagoss Extended`` - gets a variable font per family
+    too: the full one pinned at that family's coordinates. Its instances then
+    belong to the family, and are named the way its statics are: ``Thin``, not
+    ``Condensed Thin``, in ``Bagoss Condensed VF``.
+
+    What is left for the caller is the family name, and then
+    :func:`postprocess_variable_font` - which rebases the new default, rebuilds
+    STAT without the pinned axes and names the instances' PostScript names
+    after the new prefix. Nothing here is valid until it has run.
+
+    :param font: The collection's variable font. Not modified.
+    :param location: ``{axis tag: coordinate}`` to pin, e.g. ``{"wdth": 60}``.
+    :param styles: What :func:`rename_fvar_instances` takes: the family's
+        instances by their current name, or a callable. None keeps them all.
+    :returns: The new font. Without ``fvar`` when every axis was pinned.
+    """
+    pinned = instantiateVariableFont(
+        font, dict(location), inplace=False, updateFontNames=False
+    )
+    if "fvar" in pinned and styles is not None:
+        rename_fvar_instances(pinned, styles)
+    pinned["name"].removeUnusedNames(pinned)
+    return pinned
+
+
+def sync_unique_id(font: TTFont) -> bool:
+    """Keep ``name`` ID 3 in step with ID 6, by the rule a static face follows.
+
+    The first two fields of ``version;vendor;PostScript name`` are facts about
+    the release and are kept; only the third, which is what makes the
+    identifier unique, is replaced. A record not in that shape - a source may
+    set ``uniqueID`` to just its vendor code - is rebuilt from ``name`` ID 5
+    and ``OS/2.achVendID`` (:func:`font_family_model.names.unique_id`). Every
+    platform's record is rewritten, since a variable font keeps its Macintosh
+    duplicates.
+
+    :returns: Whether anything changed.
+    """
+    postscript_name = _instance_subfamily_name(font, 6)
+    if not postscript_name:
+        return False
+    version = _instance_subfamily_name(font, 5)
+    vendor = getattr(font["OS/2"], "achVendID", None) if "OS/2" in font else None
+    records = [record for record in font["name"].names if record.nameID == 3]
+    if not records:
+        value = unique_id(postscript_name, version=version, vendor=vendor)
+        if value is None:
+            return False
+        _add_office_name_records(font, 3, value)
+        return True
+    changed = False
+    for record in records:
+        try:
+            existing = record.toUnicode()
+        except UnicodeDecodeError:
+            continue
+        value = unique_id(
+            postscript_name, existing=existing, version=version, vendor=vendor
+        )
+        if value is not None and value != existing:
+            record.string = value
+            changed = True
+    return changed
 
 
 def _origin_weight_label(font: TTFont) -> str:
@@ -2168,10 +2349,7 @@ def verify_office_variable_metadata(font: TTFont) -> list[str]:
                 f"fvar wght default {defaults['wght']}"
             )
     if "OS/2" in font and "wdth" in defaults:
-        width_value = min(max(defaults["wdth"], 50.0), 200.0)
-        expected_width_class = otRound(
-            piecewiseLinearMap(width_value, WDTH_VALUE_TO_OS2_WIDTH_CLASS)
-        )
+        expected_width_class = width_class_for_wdth(defaults["wdth"])
         if font["OS/2"].usWidthClass != expected_width_class:
             errors.append(
                 f"OS/2.usWidthClass {font['OS/2'].usWidthClass} does not match "
@@ -2421,6 +2599,10 @@ def verify_office_variable_metadata(font: TTFont) -> list[str]:
                 else axis_value.Value
             )
             tag = stat_tags[axis_value.AxisIndex]
+            if tag not in limits:
+                # a STAT axis fvar does not have is reported above, as the
+                # STAT/fvar tag mismatch; its values have no range to check
+                continue
             minimum, _default, maximum = limits[tag]
             if not _coord_in_range(nominal, minimum, maximum):
                 errors.append(
@@ -2526,7 +2708,7 @@ def verify_office_variable_metadata(font: TTFont) -> list[str]:
                 errors.append(f"STAT format 4 value #{value_index} has invalid axis index")
 
     for tag, normal in normal_coordinates.items():
-        if tag not in stat_tags:
+        if tag not in stat_tags or tag not in limits:
             continue
         minimum, _default, maximum = limits[tag]
         if not _coord_in_range(normal, minimum, maximum):
@@ -2648,6 +2830,36 @@ def verify_office_variable_metadata(font: TTFont) -> list[str]:
         name_value = _instance_subfamily_name(font, name_id)
         if name_value and not _name_has_windows_english(font, name_id):
             errors.append(f"Office-facing name ID {name_id} lacks Windows English")
+
+    # The PostScript side: nameID 25, the instance names built from it, and the
+    # unique identifier that repeats nameID 6. Two tools that each derived one
+    # of them their own way used to ship fonts addressed by different names.
+    prefix = _instance_subfamily_name(font, VARIATIONS_POSTSCRIPT_PREFIX_ID)
+    if not _POSTSCRIPT_PREFIX_RE.fullmatch(prefix):
+        errors.append(
+            f"name ID 25 is {prefix!r}; expected ASCII letters and digits only"
+        )
+    else:
+        for index, instance in enumerate(font["fvar"].instances):
+            if instance.postscriptNameID == NO_NAME_ID:
+                continue
+            ps_name = _instance_subfamily_name(font, instance.postscriptNameID)
+            if not ps_name.startswith(f"{prefix}-"):
+                label = (
+                    _instance_subfamily_name(font, instance.subfamilyNameID)
+                    or f"#{index}"
+                )
+                errors.append(
+                    f"fvar instance {label!r} PostScript name {ps_name!r} does "
+                    f"not start with name ID 25 {prefix!r}"
+                )
+    unique_fields = _instance_subfamily_name(font, 3).split(";")
+    postscript_name = _instance_subfamily_name(font, 6)
+    if len(unique_fields) >= 3 and unique_fields[-1] != postscript_name:
+        errors.append(
+            f"name ID 3 ends in {unique_fields[-1]!r}, expected name ID 6 "
+            f"{postscript_name!r}"
+        )
     return errors
 
 
@@ -3127,11 +3339,15 @@ def postprocess_variable_font(
             font, resolved.codes, font_name=name, log=logger):
         raise ValueError("Failed to apply STAT axis values to %s." % name)
 
-    assigned = _assign_fvar_instance_postscript_names(font)
+    prefix = _variations_postscript_prefix(font)
+    assigned = _assign_fvar_instance_postscript_names(font, prefix or None)
     if assigned:
         logger("Named %d fvar instance(s) in %s." % (assigned, name))
     if _dedupe_italic_fvar_ps_names_in_font(font):
         logger("Deduplicated italic fvar PostScript names in %s." % name)
+    # after the dedupe, which may have rewritten name ID 6
+    if sync_unique_id(font):
+        logger("Unique font identifier of %s follows its PostScript name." % name)
 
     errors = verify_office_variable_metadata(font)
     if errors:

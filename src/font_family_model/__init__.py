@@ -27,6 +27,10 @@ from font_family_model.family import (
     compose_family,
     parse_style_attributes,
     split_style_name,
+    static_instance_widths,
+    static_instances_from_gsfont,
+    wdth_pins_from_gsfont,
+    width_class_for_wdth,
 )
 from font_family_model.names import (
     StaticFamilyNames,
@@ -42,9 +46,12 @@ from font_family_model.names import (
     postscript_name,
     static_family_names,
     strip_macintosh_name_records,
+    strip_static_stat,
     unique_id,
+    verify_static_family_names,
 )
 from font_family_model.variable import (
+    family_variable_font,
     postprocess_variable_font,
     postprocess_variable_font_file,
     variable_font_settings_from_gsfont,
@@ -55,6 +62,7 @@ from font_family_model.variable import (
 __version__ = "0.3.0"
 
 __all__ = [
+    "family_variable_font",
     "postprocess_variable_font",
     "postprocess_variable_font_file",
     "variable_font_settings_from_gsfont",
@@ -63,6 +71,10 @@ __all__ = [
     "parse_style_attributes",
     "split_style_name",
     "compose_family",
+    "width_class_for_wdth",
+    "static_instances_from_gsfont",
+    "static_instance_widths",
+    "wdth_pins_from_gsfont",
     "StaticFamilyNames",
     "apply_ribbi_bits",
     "apply_unique_id",
@@ -76,6 +88,8 @@ __all__ = [
     "postscript_name",
     "static_family_names",
     "strip_macintosh_name_records",
+    "strip_static_stat",
     "unique_id",
+    "verify_static_family_names",
     "__version__",
 ]

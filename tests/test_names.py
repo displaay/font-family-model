@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from font_family_model.names import (
@@ -23,7 +25,9 @@ from font_family_model.names import (
     postscript_name,
     static_family_names,
     strip_macintosh_name_records,
+    strip_static_stat,
     unique_id,
+    verify_static_family_names,
 )
 
 FAMILY = "Cassette"
@@ -444,6 +448,141 @@ class TestWidthClass:
         assert apply_width_class(
             TTFont(), static_family_names(FAMILY, "Condensed Bold")) is None
 
+    @pytest.mark.parametrize(
+        ("family", "style", "expected"),
+        [
+            # a name convention files the width with the family
+            ("Bagoss Condensed", "Thin", 3),
+            ("Bagoss Extended", "Bold Italic", 7),
+            ("Greed Narrow", "Light", 3),
+            ("Panell Wide", "Regular", 7),
+            # ... and not always at its end
+            ("Reckless Condensed S", "Thin", 3),
+            ("Reckless Wide XL", "Heavy Italic", 7),
+            ("Reckless Standard M", "Medium", 5),
+        ],
+    )
+    def test_the_width_the_family_names(self, family, style, expected):
+        assert static_family_names(family, style).width_class == expected
+
+    def test_the_family_width_changes_nothing_but_the_width_class(self):
+        # the legacy family, 21/22 and the WWS bit are the style's to decide;
+        # the family's width only fills in the one field Windows reads it from
+        model = static_family_names("Bagoss Condensed", "Bold Italic")
+        assert (model.legacy_family, model.legacy_subfamily) == (
+            "Bagoss Condensed", "Bold Italic")
+        assert model.is_wws_conformant
+        assert model.wws_family is None
+
+    def test_the_style_width_wins_over_the_family(self):
+        assert static_family_names("Fam Wide", "Condensed Bold").width_class == 3
+
+    @pytest.mark.parametrize(
+        ("family", "style"),
+        [("Serrif Compressed", "Thin"), ("Fenul", "Compressed Thin Italic")],
+    )
+    def test_compressed_is_narrower_than_condensed(self, family, style):
+        assert static_family_names(family, style).width_class == 2
+
+    def test_compressed_is_not_parsed_as_a_width(self):
+        # Serrif and Fenul have a bare default width next to Compressed and
+        # Condensed; if Compressed parsed as a width, every sibling suffix
+        # would be one and their default faces would be renamed "Regular"
+        from font_family_model.family import normalize_family_suffix
+
+        assert normalize_family_suffix("", ["Compressed", "Condensed"]) == ""
+        assert static_family_names("Fenul", "Compressed Thin").wws_family == (
+            "Fenul Compressed")
+
+    @pytest.mark.parametrize("family", ["Saans", "Saans Mono", "Documan CNT"])
+    def test_a_family_that_names_no_width_carries_none(self, family):
+        assert static_family_names(family, "Bold").width_class is None
+
+
+class TestWidthClassFromWdth:
+    """The 'wdth' coordinate is the width; the names are only a fallback."""
+
+    @pytest.mark.parametrize(
+        ("wdth", "expected"),
+        [
+            # the OS/2 spec's percentage for each class
+            (50, 1), (62.5, 2), (75, 3), (87.5, 4), (100, 5),
+            (112.5, 6), (125, 7), (150, 8), (200, 9),
+            # production coordinates between two classes round to the nearer
+            (60, 2), (65, 2), (78, 3), (89, 4), (103, 5), (115, 6),
+            (130, 7), (140, 8), (160, 8), (170, 8),
+            # clamped to the axis' registered range
+            (25, 1), (300, 9),
+        ],
+    )
+    def test_the_class_the_coordinate_stands_for(self, wdth, expected):
+        from font_family_model.family import width_class_for_wdth
+
+        assert width_class_for_wdth(wdth) == expected
+
+    def test_it_is_the_rule_fonttools_applies_to_a_variable_font(self):
+        from fontTools.misc.roundTools import otRound
+        from fontTools.varLib import WDTH_VALUE_TO_OS2_WIDTH_CLASS
+        from fontTools.varLib.models import piecewiseLinearMap
+
+        from font_family_model.family import width_class_for_wdth
+
+        for wdth in range(50, 201):
+            assert width_class_for_wdth(wdth) == otRound(
+                piecewiseLinearMap(wdth, WDTH_VALUE_TO_OS2_WIDTH_CLASS))
+
+    @pytest.mark.parametrize(
+        ("family", "style", "wdth", "expected"),
+        [
+            # Bagoss Condensed is 60 % wide, not the 75 % "Condensed" means
+            ("Bagoss Condensed", "Thin", 60, 2),
+            ("Bagoss Extended", "Bold Italic", 160, 8),
+            # ... and a coordinate outranks a width in the style too
+            (FAMILY, "Condensed Bold", 50, 1),
+            ("Fam Condensed", "Thin", 100, 5),
+        ],
+    )
+    def test_the_coordinate_wins_over_the_names(self, family, style, wdth, expected):
+        assert static_family_names(family, style, wdth=wdth).width_class == expected
+
+    def test_a_coordinate_gives_a_style_without_a_width_its_class(self):
+        # a Standard face whose names carry no width at all
+        assert static_family_names("Greed", "Bold", wdth=100).width_class == 5
+
+    def test_the_coordinate_changes_nothing_but_the_width_class(self):
+        by_name = static_family_names("Bagoss Condensed", "Bold Italic")
+        by_wdth = static_family_names("Bagoss Condensed", "Bold Italic", wdth=60)
+        assert by_wdth.width_class == 2
+        assert dataclasses.replace(by_wdth, width_class=by_name.width_class) == by_name
+
+    def test_without_a_coordinate_the_names_decide(self):
+        assert static_family_names("Bagoss Condensed", "Thin", wdth=None).width_class == 3
+
+
+class TestFoundryWeightNames:
+    """A foundry's own weight name is a weight, not a family attribute."""
+
+    def test_lazer_is_a_weight(self):
+        # Documan's lightest weight, at wght 100 below Thin
+        model = static_family_names("Documan", "Lazer")
+        assert (model.legacy_family, model.legacy_subfamily) == (
+            "Documan Lazer", "Regular")
+        assert model.subfamily == "Lazer"
+        assert model.is_wws_conformant
+        assert model.wws_family is None
+
+    def test_lazer_italic_pairs_with_lazer(self):
+        upright = static_family_names("Documan", "Lazer")
+        italic = static_family_names("Documan", "Lazer Italic")
+        assert italic.legacy_family == upright.legacy_family
+        assert italic.legacy_subfamily == "Italic"
+
+    def test_lazer_stays_in_the_style_when_a_family_is_split(self):
+        from font_family_model.family import split_style_name
+
+        assert split_style_name("Lazer") == ("", "Lazer")
+        assert split_style_name("CNT Lazer") == ("CNT", "Lazer")
+
 
 class TestUniqueId:
     def test_the_version_and_vendor_are_preserved(self):
@@ -511,3 +650,179 @@ class TestApplyUniqueId:
         font = self.make_font(vendor="")
         assert apply_unique_id(font, "X-Bold") is None
         assert font["name"].getDebugName(3) is None
+
+
+def _written_face(family, style, *, label=False, weight_class=400, os2_version=4):
+    """A static face named and flagged the way both tools write one.
+
+    :param label: ``style`` is a customer's label, kept verbatim in 1/17, with
+        ``name`` 2 saying only its slope - the customizer's opaque path.
+    """
+    from fontTools.fontBuilder import FontBuilder
+
+    model = static_family_names(family, style)
+    if label:
+        subfamily = style
+        italic = style.endswith("Italic")
+        parsed = model.subfamily == style
+        wws = None
+        if model.wws_family:
+            # the model's pair where it read the label back unchanged, the
+            # label repeated where it did not
+            wws = (model.wws_family, model.wws_subfamily) if parsed else (family, style)
+        model = dataclasses.replace(
+            model, legacy_family=f"{family} {style}",
+            legacy_subfamily="Italic" if italic else "Regular")
+    else:
+        subfamily = model.subfamily
+        wws = (model.wws_family, model.wws_subfamily) if model.wws_family else None
+    ps = postscript_name(family, subfamily)
+    fb = FontBuilder(1000, isTTF=True)
+    fb.setupGlyphOrder([".notdef"])
+    fb.setupCharacterMap({})
+    fb.setupGlyf({".notdef": _empty_glyph()})
+    fb.setupHorizontalMetrics({".notdef": (500, 0)})
+    fb.setupHorizontalHeader(ascent=800, descent=-200)
+    names = {
+        "familyName": model.legacy_family,
+        "styleName": model.legacy_subfamily,
+        "uniqueFontIdentifier": unique_id(ps, version="Version 1.000", vendor="DP"),
+        "fullName": f"{family} {subfamily}",
+        "psName": ps,
+        "version": "Version 1.000",
+        "typographicFamily": family,
+        "typographicSubfamily": subfamily,
+    }
+    if wws:
+        names["wwsFamilyName"], names["wwsSubfamilyName"] = wws
+    fb.setupNameTable(names, mac=False)
+    fb.setupOS2(usWeightClass=weight_class, version=os2_version)
+    fb.setupPost()
+    fb.setupHead()
+    apply_ribbi_bits(fb.font, model)
+    apply_wws_bit(fb.font, model)
+    return fb.font
+
+
+def _empty_glyph():
+    from fontTools.pens.ttGlyphPen import TTGlyphPen
+
+    return TTGlyphPen(None).glyph()
+
+
+class TestVerifyStaticFamilyNames:
+    @pytest.mark.parametrize(
+        "style",
+        ["Regular", "Bold Italic", "Thin", "ExtraLight Italic", "Condensed Black",
+         "Mono Bold", "Display Light Italic", "Lazer"],
+    )
+    def test_a_face_the_writers_made_is_consistent(self, style):
+        assert verify_static_family_names(_written_face("Booton", style)) == []
+
+    def test_a_heavy_split_face_keeps_its_bold_bit(self):
+        font = _written_face("Booton", "Black", weight_class=900)
+        assert font["OS/2"].fsSelection & FS_SELECTION_BOLD
+        assert verify_static_family_names(font) == []
+
+    @pytest.mark.parametrize("label", ["S-Bold", "S-Light Italic", "UU", "My Lovely Light"])
+    def test_a_customer_label_is_checked_only_where_it_carries_no_text(self, label):
+        # name 1 "Botched S-Bold", 2 "Regular": the model would have cut the
+        # label in half, and it is not the validator's to insist on that
+        assert verify_static_family_names(_written_face("Botched", label, label=True)) == []
+
+    def test_a_style_beyond_weight_width_and_slope_may_be_kept_whole(self):
+        # "Mono Bold": the Builder writes Saans Mono / Bold, the customizer
+        # keeps a style it did not choose whole - Saans Mono Bold / Regular.
+        # Which one is right is not settled, so neither is flagged.
+        split = _written_face("Saans", "Mono Bold", weight_class=700)
+        whole = _written_face("Saans", "Mono Bold", label=True, weight_class=700)
+        assert (split["name"].getDebugName(1), whole["name"].getDebugName(1)) == (
+            "Saans Mono", "Saans Mono Bold")
+        assert verify_static_family_names(split) == []
+        assert verify_static_family_names(whole) == []
+
+    def test_a_bold_bit_next_to_a_regular_name_2_is_caught(self):
+        # the S-Bold bug: bits from the model, name 2 from the label
+        font = _written_face("Botched", "S-Bold", label=True, weight_class=600)
+        font["OS/2"].fsSelection = (font["OS/2"].fsSelection & ~FS_SELECTION_REGULAR) | FS_SELECTION_BOLD
+        assert any("fsSelection bold/italic" in e for e in verify_static_family_names(font))
+
+    def test_wws_names_on_a_conformant_face_are_caught(self):
+        font = _written_face("Booton", "Thin")
+        font["name"].setName("Booton", 21, 3, 1, 0x409)
+        font["name"].setName("Thin", 22, 3, 1, 0x409)
+        errors = verify_static_family_names(font)
+        assert any("21/22" in e for e in errors)
+
+    def test_a_missing_wws_family_is_caught(self):
+        font = _written_face("Saans", "Mono Bold")
+        font["name"].removeNames(nameID=21)
+        font["name"].removeNames(nameID=22)
+        assert any("needs name ID 21/22" in e for e in verify_static_family_names(font))
+
+    def test_wrong_legacy_names_are_caught(self):
+        font = _written_face("Booton", "ExtraBold")
+        font["name"].setName("Bold", 2, 3, 1, 0x409)
+        assert any("name ID 1/2" in e for e in verify_static_family_names(font))
+
+    def test_a_unique_id_naming_another_face_is_caught(self):
+        font = _written_face("Booton", "Thin")
+        font["name"].setName("Version 1.000;DP;Booton-Bold", 3, 3, 1, 0x409)
+        assert any("name ID 3" in e for e in verify_static_family_names(font))
+
+    def test_macintosh_records_and_stat_are_caught(self):
+        from fontTools.otlLib.builder import buildStatTable
+
+        font = _written_face("Booton", "Thin")
+        font["name"].setName("Booton Thin", 1, 1, 0, 0)
+        buildStatTable(font, [dict(tag="wght", name="Weight",
+                                   values=[dict(value=100, name="Thin")])])
+        errors = verify_static_family_names(font)
+        assert any("Macintosh" in e for e in errors)
+        assert any("STAT" in e for e in errors)
+
+
+class TestStripStaticStat:
+    def test_the_table_and_the_names_only_it_used_go(self):
+        from fontTools.otlLib.builder import buildStatTable
+
+        font = _written_face("Booton", "Thin")
+        buildStatTable(font, [dict(tag="wght", name="Weight",
+                                   values=[dict(value=100, name="Hairline")])])
+        stat_ids = {font["STAT"].table.DesignAxisRecord.Axis[0].AxisNameID}
+        assert strip_static_stat(font)
+        assert "STAT" not in font
+        assert not {r.nameID for r in font["name"].names} & stat_ids
+        assert font["name"].getDebugName(17) == "Thin"
+        assert not strip_static_stat(font)
+
+    def test_a_name_something_else_points_to_stays(self):
+        from fontTools.feaLib.builder import addOpenTypeFeaturesFromString
+        from fontTools.otlLib.builder import buildStatTable
+
+        font = _written_face("Booton", "Thin")
+        buildStatTable(font, [dict(tag="wght", name="Weight",
+                                   values=[dict(value=100, name="Hairline")])])
+        value_id = font["STAT"].table.AxisValueArray.AxisValue[0].ValueNameID
+        addOpenTypeFeaturesFromString(font, (
+            'feature ss01 { featureNames { name "Hairline"; }; '
+            "sub .notdef by .notdef; } ss01;"))
+        feature = font["GSUB"].table.FeatureList.FeatureRecord[0].Feature
+        feature.FeatureParams.UINameID = value_id
+        strip_static_stat(font)
+        assert font["name"].getDebugName(value_id) == "Hairline"
+
+
+class TestWwsBitOnAnOldOs2:
+    def test_raising_the_table_fills_in_the_fields_it_adds(self):
+        import io
+
+        from fontTools.ttLib import TTFont
+
+        font = _written_face("Booton", "Regular", os2_version=0)
+        assert font["OS/2"].version == 4
+        assert font["OS/2"].fsSelection & FS_SELECTION_WWS
+        buffer = io.BytesIO()
+        font.save(buffer)  # would raise on a missing sxHeight
+        buffer.seek(0)
+        assert TTFont(buffer)["OS/2"].version == 4

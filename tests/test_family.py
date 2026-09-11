@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -313,3 +314,141 @@ def _write_multifamily_glyphs(path: Path) -> None:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _width_gsfont(styles, *, variable=(), family="Greed"):
+    """A source with wght/wdth axes, a static per ``(name, wdth)`` and
+    variable settings ``(name, wdth)`` listed ahead of them."""
+    from glyphsLib.classes import GSAxis, GSFont, GSInstance, InstanceType
+
+    font = GSFont()
+    font.familyName = family
+    font.axes = []
+    for name, tag in (("Weight", "wght"), ("Width", "wdth")):
+        axis = GSAxis()
+        axis.name, axis.axisTag = name, tag
+        font.axes.append(axis)
+    for name, wdth in variable:
+        instance = GSInstance()
+        instance.name = name
+        instance.type = InstanceType.VARIABLE
+        instance.axes = [400, wdth]
+        font.instances.append(instance)
+    for name, wdth in styles:
+        instance = GSInstance()
+        instance.name = name
+        instance.axes = [700 if "Bold" in name else 400, wdth]
+        font.instances.append(instance)
+    return font
+
+
+class IsVariableInstanceTests(unittest.TestCase):
+    def test_the_glyphslib_enum_is_recognised(self):
+        # InstanceType is an IntEnum; on Python 3.11 its str() is "1", so a
+        # test on the name misses every variable setting
+        from glyphsLib.classes import GSInstance, InstanceType
+
+        instance = GSInstance()
+        instance.type = InstanceType.VARIABLE
+        self.assertEqual(str(instance.type), "1")
+        self.assertTrue(split.is_variable_instance(instance))
+        instance.type = InstanceType.SINGLE
+        self.assertFalse(split.is_variable_instance(instance))
+
+
+class StaticInstancesFromGSFontTests(unittest.TestCase):
+    def test_variable_settings_and_switched_off_instances_are_left_out(self):
+        font = _width_gsfont([("Regular", 103), ("Condensed Bold", 65)],
+                             variable=[("Regular", 100)])
+        font.instances[-1].exports = False
+        statics = split.static_instances_from_gsfont(font)
+        self.assertEqual([(i.name, i.coordinate("wdth")) for i in statics],
+                         [("Regular", 103.0)])
+        self.assertEqual(statics[0].postscript_name, "Greed-Regular")
+
+    def test_no_source_no_instances(self):
+        self.assertEqual(split.static_instances_from_gsfont(None), ())
+
+
+class StaticInstanceWidthsTests(unittest.TestCase):
+    def test_the_variable_regular_does_not_make_the_static_one_ambiguous(self):
+        # Panell: a variable "Regular" at 100 next to the static at 103
+        widths = split.static_instance_widths(_width_gsfont(
+            [("Regular", 103), ("Condensed Regular", 65)], variable=[("Regular", 100)]))
+        self.assertEqual(widths.by_name["Regular"], 103.0)
+        self.assertEqual(widths.by_postscript_name["Greed-CondensedRegular"], 65.0)
+
+    def test_a_name_shared_at_two_widths_decides_nothing(self):
+        font = _width_gsfont([("Regular", 50), ("Regular", 60)])
+        font.instances[1].customParameters["postscriptFontName"] = "Greed-Wider"
+        widths = split.static_instance_widths(font)
+        self.assertIsNone(widths.by_name["Regular"])
+        # the PostScript name still tells them apart
+        self.assertEqual(widths.by_postscript_name["Greed-Wider"], 60.0)
+
+    def test_a_compiled_face_is_found_by_its_postscript_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "a.ttf"
+            _save_named_ttf(path, family="Greed", style="Condensed Regular")
+            widths = split.static_instance_widths(_width_gsfont([("Condensed Regular", 65)]))
+            self.assertEqual(widths.for_font(TTFont(path)), 65.0)
+
+    def test_a_source_without_a_width_axis_has_none(self):
+        font = _width_gsfont([("Regular", 100)])
+        font.axes = font.axes[:1]
+        self.assertEqual(split.static_instance_widths(font).by_postscript_name, {})
+
+
+class WdthPinsFromGSFontTests(unittest.TestCase):
+    def test_one_pin_per_family_that_sits_at_one_width(self):
+        font = _width_gsfont(
+            [("Compressed Regular", 50), ("Condensed Regular", 65), ("Regular", 103),
+             ("Bold", 103), ("Wide Bold", 140)],
+            variable=[("Regular", 100)], family="Panell")
+        self.assertEqual(split.wdth_pins_from_gsfont(font, "Panell"), {
+            "Panell Compressed": 50.0, "Panell Condensed": 65.0, "Panell": 103.0,
+            "Panell Wide": 140.0})
+
+
+class FamilyLocationsFromGSFontTests(unittest.TestCase):
+    def test_every_axis_that_tells_the_families_apart(self):
+        # Reckless: width and optical size (CNTR) make the family, weight not
+        from glyphsLib.classes import GSAxis, GSFont, GSInstance
+
+        font = GSFont()
+        font.familyName = "Reckless"
+        font.axes = []
+        for name, tag in (("Weight", "wght"), ("Width", "wdth"), ("Contrast", "CNTR")):
+            axis = GSAxis()
+            axis.name, axis.axisTag = name, tag
+            font.axes.append(axis)
+        for width, wdth in (("Condensed", 50), ("Standard", 100)):
+            for size, cntr in (("S", 10), ("XL", 100)):
+                for weight, wght in (("Thin", 100), ("Bold", 700)):
+                    instance = GSInstance()
+                    instance.name = f"{width} {size} {weight}"
+                    instance.axes = [wght, wdth, cntr]
+                    font.instances.append(instance)
+        locations = split.family_locations_from_gsfont(font, "Reckless")
+        self.assertEqual(locations["Reckless Condensed S"], {"CNTR": 10.0, "wdth": 50.0})
+        self.assertEqual(locations["Reckless Standard XL"], {"CNTR": 100.0, "wdth": 100.0})
+
+    def test_a_single_family_has_nothing_to_pin(self):
+        font = _width_gsfont([("Regular", 100), ("Bold", 100)])
+        self.assertEqual(split.family_locations_from_gsfont(font, "Greed"), {"Greed": {}})
+
+
+class InstanceFamilyAndStyleTests(unittest.TestCase):
+    def test_the_width_token_goes_to_the_family(self):
+        siblings = ["Condensed", "", "Extended"]
+        self.assertEqual(
+            split.instance_family_and_style("Greed", "Condensed Bold Italic", siblings),
+            ("Greed Condensed", "Bold Italic"))
+        self.assertEqual(split.instance_family_and_style("Greed", "Bold", siblings),
+                         ("Greed Regular", "Bold"))
+
+    def test_a_variable_setting_does_not_count_as_a_family(self):
+        # the statics are all one width; only the variable setting has no token
+        font = _width_gsfont([("Condensed Regular", 65), ("Condensed Bold", 65)],
+                             variable=[("Regular", 100)])
+        self.assertFalse(split.multi_family_split_decision(gsfont=font))

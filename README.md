@@ -91,6 +91,36 @@ The record at the all-axis default keeps `name` ID 17 and omits a PostScript
 name so that `name` ID 6 stands for it. Adobe and Glyphs still list the face;
 Word does not list `Regular` twice.
 
+The PostScript side is the pass's too. `name` ID 25 is reduced to ASCII letters
+and digits (a family name spelled with a space, `Booton VF`, becomes
+`BootonVF`); every other named instance is called `{name 25}-{style}`, the way
+Adobe TN #5902 derives it, even if the compiler named it after another prefix;
+and `name` ID 3 ends in `name` ID 6 by the same rule a static face follows. The
+validator checks all three.
+
+### A width family's variable font
+
+A width collection delivered one family per width - `Bagoss Condensed`,
+`Bagoss Standard`, `Bagoss Extended` - gets a variable font per family too,
+cut from the full one:
+
+```python
+from font_family_model import family, variable
+
+styles = family.family_instance_styles(full, "Bagoss", "Bagoss Condensed")
+font = variable.family_variable_font(full, {"wdth": 60}, styles=styles)
+# name the family (1/4/6/16/25), then:
+font = variable.postprocess_variable_font(font)
+```
+
+Its instances are named like the family's statics, `Thin` rather than
+`Condensed Thin`, and the pass then gives them `BagossCondensedVF-Thin` and
+rebuilds STAT without the pinned axis. Nothing is valid before the pass has
+run; a family VF renamed without it keeps the collection's PostScript names -
+`BagossVF-CondensedThin` next to `name` 25 `BagossCondensedVF`. `styles` may
+also be a mapping from the collection's instance names to the family's (a
+name convention's labels); instances it does not list are dropped.
+
 ## Sources
 
 The package **never reads a `.glyphs` file**. Callers that have source metadata
@@ -100,7 +130,16 @@ hand over an already-parsed font object:
 from font_family_model import variable_font_settings_from_gsfont
 
 settings = variable_font_settings_from_gsfont(gsfont)   # Axis Values parameters
+statics = family.static_instances_from_gsfont(gsfont)    # the static instances
+widths = family.static_instance_widths(gsfont)           # their wdth, by PS name
+pins = family.wdth_pins_from_gsfont(gsfont, "Bagoss")     # {family: wdth}
 ```
+
+A source lists its variable-font settings as instances too, often named like a
+static at another width - Panell's variable `Regular` sits at wdth 100 next to
+the static `Regular` at 103. `family.is_variable_instance` tells them apart;
+note that glyphsLib's `InstanceType` is an `IntEnum`, whose `str()` is `"1"`
+on Python 3.11, so comparing names finds none.
 
 Each application already has its own loader — one decodes MacRoman and converts
 format 4, the other is handed the body of a request — and a second reader here
@@ -136,6 +175,9 @@ apply_wws_bit(font, m)                # OS/2.fsSelection bit 8
 apply_width_class(font, m)            # OS/2.usWidthClass
 apply_unique_id(font, postscript_name(m.family, m.subfamily))   # name 3
 strip_macintosh_name_records(font)    # statics carry none
+strip_static_stat(font)               # nor a STAT
+
+verify_static_family_names(font)      # [] when all of it agrees
 ```
 
 | style | 1 | 2 | 21 | 22 | width |
@@ -159,6 +201,12 @@ Note what that means for `Extra Bold`: `name` ID 2 is `Regular`, not `Bold`.
 It is the Regular of its own legacy family. Reading the style as *words* rather
 than as attributes gets this wrong, and both tools used to.
 
+A foundry may name a weight outside the OpenType vocabulary. Those names are
+listed in `family.FOUNDRY_WEIGHT_NAMES` and read as weights like any other —
+`Lazer`, Documan's wght 100 below Thin, gives `Documan Lazer` / `Regular` and
+no 21/22. A weight word the list does not have is taken for a non-WWS attribute
+and gets a WWS family that does not exist.
+
 ### The WWS family (21/22)
 
 The family as it would be if weight, width and slope were the only axes. A face
@@ -180,12 +228,35 @@ drawn.
 
 ### The width
 
-`OS/2.usWidthClass` comes from the width the style names. A `.glyphs` source
-with a width *axis* has no reason to declare the field as well, so glyphsLib
-leaves `openTypeOS2WidthClass` unset and ufo2ft defaults every instance to 5 —
-a family's Condensed, Standard and Extended faces all shipping as 100% wide.
-A style that names no width is left alone: there the source's value is the only
-evidence there is.
+`OS/2.usWidthClass` comes from the face's `wdth` coordinate. A `.glyphs`
+source with a width *axis* has no reason to declare the field as well, so
+glyphsLib leaves `openTypeOS2WidthClass` unset and ufo2ft defaults every
+instance to 5 — a family's Condensed, Standard and Extended faces all shipping
+as 100% wide.
+
+```python
+static_family_names("Bagoss Condensed", "Thin", wdth=60).width_class   # 2
+```
+
+The `wdth` axis is registered in percent of the normal width and the OS/2 spec
+gives every class its percentage (1 = 50 %, 3 = 75 %, 5 = 100 %, 8 = 150 %,
+9 = 200 %), so `family.width_class_for_wdth` interpolates between them and
+rounds — the rule fontTools applies to a variable font's default, and the one
+`verify_office_variable_metadata` checks. A static face and a variable font
+pinned at the same width therefore say the same thing. A width *word* does
+not: Bagoss' `Condensed` is 60 %, Reckless' is 50 %, and the OS/2 table says
+75 %.
+
+Without a coordinate — a source with no width axis — the names are the
+fallback. The style first; a style without a width leaves the family to say it:
+a name convention files the width there (`Bagoss Condensed` + `Thin`,
+`Reckless Condensed S` + `Thin`), and the family is searched word by word.
+Either way only the width class reads it — the legacy family, 21/22 and the
+WWS bit stay the style's. `Compressed` counts as a width class (2) without
+being parsed as a width, so a source with `Compressed`, `Condensed` and a bare
+default width keeps its default faces in the bare family. A face with neither
+a coordinate nor a width in its names is left alone: there the source's value
+is the only evidence there is.
 
 ### The PostScript name (6) and the identifier (3)
 
@@ -197,6 +268,31 @@ unique is the third field, so the first two are preserved and only the last is
 replaced. Falling back to `name` ID 5 it cuts at the first semicolon — a build
 stamp appended there (ttfautohint writes one) would otherwise split the
 identifier into four fields.
+
+`apply_wws_bit` raises an `OS/2` table older than version 4, where the bit is
+first defined, and fills in the fields the older versions lack - or the table
+would not compile.
+
+### STAT
+
+A static face carries none. One describing a single face cannot link it to
+its style siblings (Format 3) or place it on any axis but the ones it names,
+and a font that declares a STAT is taken at its word over the RIBBI and
+`OS/2` model that describes a static family correctly. `strip_static_stat`
+removes the table and the name records only it used.
+
+### Checking a face
+
+`verify_static_family_names(font)` is the static counterpart of
+`verify_office_variable_metadata`: it asks a finished face the questions the
+writers answered - 21/22 present exactly when the style needs them, the WWS
+bit, RIBBI bits agreeing with the `name` 2 actually written (italic angle and
+the heavy-split bold included), `name` 3 ending in `name` 6, no Macintosh
+records, no STAT - so a tool audits its output without a second copy of the
+rules. Text is compared with the model only where the model read the style
+back unchanged and weight, width and slope describe it; a customer's label is
+checked for what it does not say in words. `usWidthClass` is not checked: the
+coordinate is not in the font.
 
 ### Macintosh records
 
@@ -239,8 +335,11 @@ recognised and the model's spelling is safe to write. False means the style
 carries something the model did not parse, and a caller holding an authored
 label should treat that label as one opaque token: keep it verbatim in
 `name` 1, 4, 6, 16 and 17, and take from the model only the answers that
-carry no text — `name` 2, the RIBBI and WWS bits, the width class, the unique
-identifier.
+carry no text — the WWS bit, the width class, the unique identifier. `name` 2
+can then say no more than the label's slope, and the RIBBI bits have to say the
+same: hand `apply_ribbi_bits` the model with `legacy_family` and
+`legacy_subfamily` replaced by what was written, or a label reading `S-Bold`
+gets the bold bit next to a `name` ID 2 of `Regular`.
 
 Which side of the boundary you are on depends on where the styles come from.
 Instance names authored in the source are descriptions, and respelling them
@@ -250,19 +349,21 @@ font, carried in by an API — is a name, and is not yours to correct.
 ## Modules
 
 - **`variable`** — the pass and its two validators
-  (`verify_office_variable_metadata`, `verify_stat_covers_fvar`)
+  (`verify_office_variable_metadata`, `verify_stat_covers_fvar`), and a width
+  family's variable font cut from a collection's (`family_variable_font`)
 - **`family`** — splitting and composing family and style names: weight
-  spellings, italic suffixes, width families, collections
+  spellings, italic suffixes, width families, collections; what a parsed
+  source's static instances are and where they sit
 - **`names`** — the static side: every family-model record for one face —
   `name` 1/2/3/6/16/17/21/22, the RIBBI and WWS bits, the width class — from
-  one rule
+  one rule, and `verify_static_family_names` to check it
 
 ## Install
 
 Released through GitHub Releases, not PyPI:
 
 ```
-font-family-model @ https://github.com/displaay/font-family-model/releases/download/v0.3.0/font_family_model-0.3.0-py3-none-any.whl
+font-family-model @ https://github.com/displaay/font-family-model/releases/download/v0.4.0/font_family_model-0.4.0-py3-none-any.whl
 ```
 
 `fontTools >= 4.62.1` is a floor, not a preference: `instantiateVariableFont`

@@ -30,12 +30,16 @@ rule than the others.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+
+from fontTools.ttLib.tables._n_a_m_e import NameRecordVisitor
 
 from .family import (
     WIDTH_NAME_TO_OS2_WIDTH_CLASS,
     compose_family,
     parse_style_attributes,
+    width_class_for_wdth,
+    width_class_named_in,
 )
 
 #: The four faces a single legacy family can hold.
@@ -217,7 +221,8 @@ class StaticFamilyNames:
     #: statement made in the two places a reader might look.
     is_wws_conformant: bool
     #: ``OS/2.usWidthClass``, 1 (UltraCondensed) to 9 (UltraExpanded), or None
-    #: when the style names no width and the value the source gave stands.
+    #: when there is no 'wdth' coordinate, neither the style nor the family
+    #: names a width, and the value the source gave stands.
     width_class: int | None = None
 
     @property
@@ -241,7 +246,9 @@ class StaticFamilyNames:
         return self.legacy_family != self.family
 
 
-def static_family_names(family: str, subfamily: str) -> StaticFamilyNames:
+def static_family_names(
+    family: str, subfamily: str, *, wdth: float | None = None
+) -> StaticFamilyNames:
     """Every family-model name record for one static face, from one rule.
 
     ``name`` ID 1/2, 16/17 and 21/22 are three answers to the same question,
@@ -252,6 +259,10 @@ def static_family_names(family: str, subfamily: str) -> StaticFamilyNames:
 
     :param family: The typographic family name.
     :param subfamily: The typographic subfamily, as authored.
+    :param wdth: The face's user coordinate on the source's 'wdth' axis, when
+        the source has one. It decides the width class
+        (:func:`~font_family_model.family.width_class_for_wdth`); the names
+        are read for a width only without it.
     :returns: A :class:`StaticFamilyNames`.
     """
     family = collapse_spaces(family)
@@ -276,9 +287,56 @@ def static_family_names(family: str, subfamily: str) -> StaticFamilyNames:
         wws_family=wws_family,
         wws_subfamily=wws_subfamily,
         is_wws_conformant=attrs.is_wws_conformant,
-        width_class=WIDTH_NAME_TO_OS2_WIDTH_CLASS.get(attrs.width) if attrs.width
-        else None,
+        width_class=_width_class(wdth, attrs.width, subfamily, family),
     )
+
+
+def _width_class(
+    wdth: float | None, width: str, subfamily: str, family: str
+) -> int | None:
+    """The width class of one face.
+
+    From its 'wdth' coordinate whenever there is one: the axis is in percent of
+    the normal width and the OS/2 spec gives each class its percentage, so the
+    coordinate is the measurement and a width word only a description of it -
+    one family's ``Condensed`` is 60 %, another's 50 %.
+
+    A face whose source has no width axis falls back on the names. The parsed
+    width comes first. A style without one may still carry a width word the
+    parser does not take as a width (:data:`WIDTH_CLASS_ONLY_NAMES`), and a
+    name convention moves the width out of the style altogether and into the
+    family - ``Bagoss Condensed`` + ``Thin``. Only the width class reads the
+    family: the legacy family, 21/22 and the WWS bit stay decided by the
+    style, as before.
+    """
+    if wdth is not None:
+        return width_class_for_wdth(wdth)
+    if width:
+        return WIDTH_NAME_TO_OS2_WIDTH_CLASS.get(width)
+    return width_class_named_in(subfamily) or width_class_named_in(family)
+
+
+def ribbi_bits(font, model: StaticFamilyNames) -> tuple[bool, bool]:
+    """Whether the face claims bold and italic, as :func:`apply_ribbi_bits` writes it.
+
+    The model's answer, corrected by the two things only the font knows - see
+    :func:`apply_ribbi_bits`. Separate so that a check of the bits asks the
+    same question the writer answered.
+
+    :returns: ``(is_bold, is_italic)``.
+    """
+    is_bold = model.is_bold
+    is_italic = model.is_italic
+    if "post" in font and font["post"].italicAngle:
+        is_italic = True
+    if (
+        not is_bold
+        and model.split_legacy_family
+        and "OS/2" in font
+        and font["OS/2"].usWeightClass >= SPLIT_FAMILY_BOLD_WEIGHT_CLASS
+    ):
+        is_bold = True
+    return is_bold, is_italic
 
 
 def apply_ribbi_bits(font, model: StaticFamilyNames) -> tuple[bool, bool]:
@@ -306,18 +364,7 @@ def apply_ribbi_bits(font, model: StaticFamilyNames) -> tuple[bool, bool]:
     :param model: The face's :class:`StaticFamilyNames`.
     :returns: ``(is_bold, is_italic)`` as written.
     """
-    is_bold = model.is_bold
-    is_italic = model.is_italic
-
-    if "post" in font and font["post"].italicAngle:
-        is_italic = True
-    if (
-        not is_bold
-        and model.split_legacy_family
-        and "OS/2" in font
-        and font["OS/2"].usWeightClass >= SPLIT_FAMILY_BOLD_WEIGHT_CLASS
-    ):
-        is_bold = True
+    is_bold, is_italic = ribbi_bits(font, model)
 
     if "OS/2" in font:
         os2 = font["OS/2"]
@@ -348,7 +395,9 @@ def apply_wws_bit(font, model: StaticFamilyNames) -> bool:
     A face that carries no 21/22 has to say why - that weight, width and slope
     describe it completely - and ``OS/2.fsSelection`` bit 8 is where. The bit
     is only defined from ``OS/2`` version 4 on, so an older table is raised;
-    below that there was no field for a reader to have looked at.
+    below that there was no field for a reader to have looked at. Raising it
+    means filling in the fields the older versions did not have, or the table
+    does not compile.
 
     :param font: A ``TTFont`` with ``OS/2``.
     :param model: The face's :class:`StaticFamilyNames`.
@@ -360,10 +409,63 @@ def apply_wws_bit(font, model: StaticFamilyNames) -> bool:
     if model.is_wws_conformant:
         os2.fsSelection |= FS_SELECTION_WWS
         if os2.version < 4:
-            os2.version = 4
+            _raise_os2_to_version_4(os2)
     else:
         os2.fsSelection &= ~FS_SELECTION_WWS & 0xFFFF
     return bool(os2.fsSelection & FS_SELECTION_WWS)
+
+
+def _raise_os2_to_version_4(os2) -> None:
+    """Raise an ``OS/2`` table to version 4, with the fields it adds."""
+    if os2.version < 1:
+        os2.ulCodePageRange1 = 0
+        os2.ulCodePageRange2 = 0
+    if os2.version < 2:
+        os2.sxHeight = 0
+        os2.sCapHeight = 0
+        os2.usDefaultChar = 0
+        os2.usBreakChar = 32
+        os2.usMaxContext = 0
+    os2.version = 4
+
+
+def strip_static_stat(font) -> bool:
+    """Remove a static face's STAT table, and the names only it used.
+
+    A static face carries none. A STAT that exists is taken at its word, and
+    one describing a single face cannot link it to its style siblings
+    (Format 3) or place it on any axis but the ones it names - it overrides
+    the legacy RIBBI model and ``OS/2`` weight and width that describe a static
+    family correctly. Name records at 256 and above that nothing else points
+    to go with it.
+
+    :param font: A static ``TTFont``.
+    :returns: Whether there was a table to remove.
+    """
+    if "STAT" not in font:
+        return False
+    table = font["STAT"].table
+    stat_ids: list[int | None] = []
+    axes = getattr(getattr(table, "DesignAxisRecord", None), "Axis", None) or []
+    for axis in axes:
+        stat_ids.append(axis.AxisNameID)
+    values = getattr(getattr(table, "AxisValueArray", None), "AxisValue", None) or []
+    for value in values:
+        stat_ids.append(getattr(value, "ValueNameID", None))
+    stat_ids.append(getattr(table, "ElidedFallbackNameID", None))
+    del font["STAT"]
+    # a stylistic set's name can be the same record as a STAT value's
+    visitor = NameRecordVisitor()
+    visitor.visit(font)
+    drop_ids = {
+        name_id for name_id in stat_ids
+        if name_id is not None and name_id >= 256 and name_id not in visitor.seen
+    }
+    if drop_ids:
+        font["name"].names = [
+            record for record in font["name"].names if record.nameID not in drop_ids
+        ]
+    return True
 
 
 def strip_macintosh_name_records(font) -> int:
@@ -395,7 +497,7 @@ def strip_macintosh_name_records(font) -> int:
 
 
 def apply_width_class(font, model: StaticFamilyNames) -> int | None:
-    """Write ``OS/2.usWidthClass`` from the width the style names.
+    """Write ``OS/2.usWidthClass`` from the face's width.
 
     The field is 1 (UltraCondensed) to 9 (UltraExpanded), and Windows reads it
     when it matches faces into a family and when it picks a fallback. A source
@@ -404,9 +506,12 @@ def apply_width_class(font, model: StaticFamilyNames) -> int | None:
     ufo2ft defaults every instance to 5. A family's Condensed, Standard and
     Extended faces all ship claiming to be 100% wide.
 
-    So the width is taken from the style, which is the one place it is always
-    written down. A style that names no width is left alone - there the value
-    the source gave is the only evidence there is.
+    So the width is taken from the face's 'wdth' coordinate when the caller
+    gave one to :func:`static_family_names`, the same rule fontTools applies to
+    a variable font's default, and otherwise from the name: the style, or the
+    family when a name convention filed it there (``Bagoss Condensed`` +
+    ``Thin``). A face with neither is left alone - there the value the source
+    gave is the only evidence there is.
 
     :param font: A ``TTFont`` with ``OS/2``.
     :param model: The face's :class:`StaticFamilyNames`.
@@ -488,3 +593,133 @@ def apply_unique_id(font, postscript_name: str) -> str | None:
         return None
     name_table.setName(value, 3, *WINDOWS_ENGLISH_NAME)
     return value
+
+
+#: ``name`` IDs every static face carries on the Windows English platform.
+REQUIRED_STATIC_NAME_IDS = (1, 2, 3, 4, 5, 6, 16, 17)
+
+
+def _windows_english_name(font, name_id: int) -> str:
+    record = font["name"].getName(name_id, *WINDOWS_ENGLISH_NAME)
+    if record is None:
+        return ""
+    try:
+        return record.toUnicode().strip()
+    except UnicodeDecodeError:
+        return ""
+
+
+def verify_static_family_names(font) -> list[str]:
+    """Check that a static face's names and bits describe one family.
+
+    The static counterpart of
+    :func:`font_family_model.variable.verify_office_variable_metadata`: it
+    asks of a finished face the questions :func:`static_family_names` and the
+    writers answered, so that neither tool keeps a second copy of the rules to
+    audit itself with.
+
+    The text is checked against the model only where the model read the style
+    back unchanged (``name`` 17 equals the model's subfamily). A style it did
+    not - a customer's ``S-Bold`` - is a name someone chose, written verbatim;
+    there the checks are the ones that carry no text: 21/22 present or absent,
+    the WWS bit, and RIBBI bits that agree with the ``name`` 2 actually
+    written.
+
+    ``usWidthClass`` is not checked: the face's ``wdth`` coordinate is not in
+    the font.
+
+    :param font: A static ``TTFont``.
+    :returns: The problems found, empty when the face is consistent.
+    """
+    errors: list[str] = []
+    if "fvar" in font:
+        return ["variable font: use verify_office_variable_metadata"]
+
+    names = {name_id: _windows_english_name(font, name_id)
+             for name_id in (*REQUIRED_STATIC_NAME_IDS, 21, 22)}
+    for name_id in REQUIRED_STATIC_NAME_IDS:
+        if not names[name_id]:
+            errors.append(f"name ID {name_id} has no Windows English record")
+    mac = sorted({r.nameID for r in font["name"].names if r.platformID == 1})
+    if mac:
+        errors.append(f"Macintosh name records present for IDs {mac}")
+    if "STAT" in font:
+        errors.append("a static face carries a STAT table")
+
+    family = names[16] or names[1]
+    subfamily = names[17] or names[2] or "Regular"
+    legacy_family, legacy_subfamily = names[1], names[2]
+    if legacy_subfamily not in RIBBI_STYLES:
+        errors.append(f"name ID 2 {legacy_subfamily!r} is not one of {RIBBI_STYLES}")
+
+    model = static_family_names(family, subfamily)
+    parsed = model.subfamily == subfamily
+    # The legacy split is checked only for a style of weight, width and slope
+    # alone. One with an attribute beyond them (``Mono Bold``) is where a
+    # caller holding a chosen name keeps it whole, and today the two tools
+    # differ there: ``Fam Mono Bold`` / ``Regular`` against ``Fam Mono`` /
+    # ``Bold``.
+    if parsed and model.is_wws_conformant and (legacy_family, legacy_subfamily) != (
+            model.legacy_family, model.legacy_subfamily):
+        errors.append(
+            f"name ID 1/2 {legacy_family!r}/{legacy_subfamily!r}, expected "
+            f"{model.legacy_family!r}/{model.legacy_subfamily!r}")
+    if parsed and names[6] != postscript_name(family, subfamily):
+        errors.append(
+            f"name ID 6 {names[6]!r}, expected {postscript_name(family, subfamily)!r}")
+    if names[6] and names[6] != postscript_component(names[6]):
+        errors.append(f"name ID 6 {names[6]!r} has characters PostScript cannot hold")
+    fields = names[3].split(";")
+    if len(fields) >= 3 and names[6] and fields[-1] != names[6]:
+        errors.append(f"name ID 3 {names[3]!r} does not end in name ID 6 {names[6]!r}")
+
+    has_21, has_22 = bool(names[21]), bool(names[22])
+    if has_21 != has_22:
+        errors.append("name ID 21 and 22 must come together")
+    if model.wws_family is None and (has_21 or has_22):
+        errors.append(
+            f"name ID 21/22 on {subfamily!r}, which weight, width and slope "
+            "describe completely")
+    if model.wws_family is not None and not (has_21 and has_22):
+        errors.append(f"{subfamily!r} needs name ID 21/22")
+    if parsed and model.wws_family is not None and (names[21], names[22]) != (
+            model.wws_family, model.wws_subfamily):
+        errors.append(
+            f"name ID 21/22 {names[21]!r}/{names[22]!r}, expected "
+            f"{model.wws_family!r}/{model.wws_subfamily!r}")
+
+    if "OS/2" in font:
+        os2 = font["OS/2"]
+        wws_bit = bool(os2.fsSelection & FS_SELECTION_WWS)
+        if wws_bit != model.is_wws_conformant:
+            errors.append(
+                f"fsSelection WWS bit {'set' if wws_bit else 'clear'}, the style "
+                f"{'is' if model.is_wws_conformant else 'is not'} WWS conformant")
+        if wws_bit and os2.version < 4:
+            errors.append("fsSelection WWS bit in an OS/2 table older than version 4")
+
+        # the bits follow the name ID 1/2 written, whether or not the model
+        # would have written them
+        written = replace(
+            model, legacy_family=legacy_family or model.legacy_family,
+            legacy_subfamily=legacy_subfamily or model.legacy_subfamily)
+        is_bold, is_italic = ribbi_bits(font, written)
+        fs_bold = bool(os2.fsSelection & FS_SELECTION_BOLD)
+        fs_italic = bool(os2.fsSelection & FS_SELECTION_ITALIC)
+        fs_regular = bool(os2.fsSelection & FS_SELECTION_REGULAR)
+        if (fs_bold, fs_italic) != (is_bold, is_italic):
+            errors.append(
+                f"fsSelection bold/italic {fs_bold}/{fs_italic}, expected "
+                f"{is_bold}/{is_italic}")
+        if fs_regular != (not is_bold and not is_italic):
+            errors.append(f"fsSelection regular bit {fs_regular} with bold/italic "
+                          f"{is_bold}/{is_italic}")
+        if "head" in font:
+            mac_style = font["head"].macStyle
+            mac_bold = bool(mac_style & HEAD_MACSTYLE_BOLD)
+            mac_italic = bool(mac_style & HEAD_MACSTYLE_ITALIC)
+            if (mac_bold, mac_italic) != (is_bold, is_italic):
+                errors.append(
+                    f"head.macStyle bold/italic {mac_bold}/{mac_italic}, expected "
+                    f"{is_bold}/{is_italic}")
+    return errors

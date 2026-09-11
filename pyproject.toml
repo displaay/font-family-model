@@ -21,8 +21,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# glyphsLib is needed only to build the GSFont fixture one test reads Axis
-# Values from; the package itself never imports it.
+# glyphsLib is needed only to build the GSFont fixtures the tests of the
+# source readers take; the package itself never imports it.
 test = ["pytest>=7", "glyphsLib>=6.12,<7"]
 dev = ["pytest>=7", "pytest-cov", "ruff", "mypy", "glyphsLib>=6.12,<7"]
 

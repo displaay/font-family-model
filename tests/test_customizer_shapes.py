@@ -19,6 +19,7 @@ from fontTools.fontBuilder import FontBuilder
 from fontTools.pens.ttGlyphPen import TTGlyphPen
 
 from font_family_model import variable as vf
+from font_family_model.family import split_style_name
 
 UPM = 1000
 GLYPHS = [".notdef", "A"]
@@ -189,6 +190,72 @@ class TestPostScriptPrefixes:
                    for p in instances(font).values() if p)
 
 
+class TestPostScriptIdentity:
+    """nameID 25, the instance names built from it, and nameID 3.
+
+    The two tools used to leave these to their own pre-renaming, and shipped
+    one font under different names: the Builder wrote nameID 25 as the family
+    ("Booton VF") and kept the compiler's instance names ("Booton-Thin") next to
+    nameID 6 "BootonVF".
+    """
+
+    INSTANCES = [("Thin", {"wght": 300}), ("Bold", {"wght": 700})]
+
+    def _name_instances(self, font, prefix):
+        nt = font["name"]
+        for inst in font["fvar"].instances:
+            style = nt.getDebugName(inst.subfamilyNameID).replace(" ", "")
+            inst.postscriptNameID = nt.addName(
+                f"{prefix}-{style}", platforms=((3, 1, 0x409),))
+
+    def test_a_prefix_spelled_like_a_family_is_reduced_to_the_repertoire(self):
+        font = build_vf("Booton VF", self.INSTANCES)
+        font["name"].setName("Booton VF", 25, 3, 1, 0x409)
+        out = run(font)
+        assert out["name"].getDebugName(25) == "BootonVF"
+        assert all(p.startswith("BootonVF-") for p in instances(out).values() if p)
+
+    def test_instance_names_from_another_prefix_are_renamed(self):
+        font = build_vf("Booton VF", self.INSTANCES)
+        self._name_instances(font, "Booton")
+        out = run(font)
+        assert instances(out)["Thin"] == "BootonVF-Thin"
+        # renamed in place, not left behind as an unreferenced record
+        strings = {r.toUnicode() for r in out["name"].names}
+        assert "Booton-Thin" not in strings
+
+    def test_a_valid_prefix_is_kept_even_when_it_says_more_than_the_family(self):
+        font = run(build_vf("Botched VF", self.INSTANCES, ps_prefix="BotchedVFRoman"))
+        assert font["name"].getDebugName(25) == "BotchedVFRoman"
+
+    def test_a_vendor_only_unique_id_is_rebuilt(self):
+        # Booton.glyphs sets the uniqueID parameter to its vendor code alone
+        font = build_vf("Booton VF", self.INSTANCES)
+        font["name"].setName("DP", 3, 3, 1, 0x409)
+        font["name"].setName("Version 1.005", 5, 3, 1, 0x409)
+        font["OS/2"].achVendID = "DP  "
+        out = run(font)
+        assert out["name"].getDebugName(3) == "Version 1.005;DP;BootonVF"
+
+    def test_a_unique_id_keeps_its_version_and_vendor(self):
+        font = build_vf("Booton VF", self.INSTANCES)
+        font["name"].setName("1.005;DP;Booton-Regular", 3, 3, 1, 0x409)
+        out = run(font)
+        assert out["name"].getDebugName(3) == "1.005;DP;BootonVF"
+
+    def test_the_validator_rejects_a_spaced_prefix(self):
+        font = run(build_vf("Booton VF", self.INSTANCES))
+        font["name"].setName("Booton VF", 25, 3, 1, 0x409)
+        errors = vf.verify_office_variable_metadata(font)
+        assert any("name ID 25" in e for e in errors)
+
+    def test_the_validator_rejects_a_unique_id_naming_another_font(self):
+        font = run(build_vf("Booton VF", self.INSTANCES))
+        font["name"].setName("1.005;DP;Booton-Regular", 3, 3, 1, 0x409)
+        errors = vf.verify_office_variable_metadata(font)
+        assert any("name ID 3" in e for e in errors)
+
+
 class TestDefaultInstance:
     """The record at the all-axis default is the contract's one exception."""
 
@@ -334,3 +401,65 @@ class TestAxisValuesPerExportedFile:
         font = run(build_vf("Fam VF", [("Light", {"wght": 300})]))
         with pytest.raises(TypeError):
             vf.resolve_stat_axis_value_codes_from_font(font, "Fam-Italics-VF")
+
+
+class TestFamilyVariableFont:
+    """One family's VF cut from a width collection's, named like its statics."""
+
+    AXES = [("wght", 300, 400, 700, "Weight"), ("wdth", 75, 100, 100, "Width")]
+    INSTANCES = [
+        ("Condensed Thin", {"wght": 300, "wdth": 75}),
+        ("Condensed Regular", {"wght": 400, "wdth": 75}),
+        ("Condensed Bold", {"wght": 700, "wdth": 75}),
+        ("Thin", {"wght": 300, "wdth": 100}),
+        ("Regular", {"wght": 400, "wdth": 100}),
+        ("Bold", {"wght": 700, "wdth": 100}),
+    ]
+
+    @staticmethod
+    def _name_family(font, family, prefix):
+        # what either tool writes before the pass
+        for name_id, value in ((1, family), (4, family), (16, family),
+                               (6, prefix), (25, prefix)):
+            font["name"].removeNames(nameID=name_id)
+            font["name"].setName(value, name_id, 3, 1, 0x409)
+
+    def _condensed(self, styles):
+        full = run(build_vf("Fam VF", self.INSTANCES, axes=self.AXES))
+        font = vf.family_variable_font(full, {"wdth": 75}, styles=styles)
+        self._name_family(font, "Fam Condensed VF", "FamCondensedVF")
+        return font
+
+    def test_its_instances_are_named_like_the_familys_statics(self):
+        def condensed_only(style):
+            suffix, rest = split_style_name(style)
+            return rest if suffix == "Condensed" else None
+
+        font = run(self._condensed(condensed_only))
+        assert [a.axisTag for a in font["fvar"].axes] == ["wght"]
+        assert [a.AxisTag for a in font["STAT"].table.DesignAxisRecord.Axis] == ["wght"]
+        assert instances(font) == {
+            "Thin": "FamCondensedVF-Thin",
+            "Regular": None,
+            "Bold": "FamCondensedVF-Bold",
+        }
+
+    def test_a_mapping_keeps_only_the_instances_it_lists(self):
+        # the customizer's name convention: instance name -> label
+        font = run(self._condensed({"Condensed Thin": "Thin", "Condensed Regular": "Regular"}))
+        assert set(instances(font)) == {"Thin", "Regular"}
+
+    def test_the_input_is_left_alone(self):
+        full = run(build_vf("Fam VF", self.INSTANCES, axes=self.AXES))
+        before = instances(full)
+        vf.family_variable_font(full, {"wdth": 75}, styles=lambda s: "X " + s)
+        assert instances(full) == before
+
+    def test_the_validator_reports_a_stat_axis_fvar_lacks_instead_of_raising(self):
+        # a pinned font before the pass: STAT still describes the wdth axis
+        full = run(build_vf("Fam VF", self.INSTANCES, axes=self.AXES))
+        from fontTools.varLib.instancer import instantiateVariableFont
+
+        pinned = instantiateVariableFont(full, {"wdth": 75}, updateFontNames=False)
+        errors = vf.verify_office_variable_metadata(pinned)
+        assert any("STAT/fvar axis tags differ" in e for e in errors)
