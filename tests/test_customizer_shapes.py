@@ -181,6 +181,28 @@ class TestPostScriptPrefixes:
             ps_prefix="BotchedVFItalic"))
         assert instances(font)["Light Italic"] == "BotchedVFItalic-Light"
 
+    def test_italic_slice_with_a_bare_italic_default(self):
+        # the Italics slice of a width family's VF (Bagoss Condensed): the
+        # family pass has already renamed "Regular Italic" to the RIBBI
+        # "Italic", and pinning slnt left wght as the only axis, so the
+        # instance at the default says nothing about its weight. Its STAT
+        # value is the Regular weight, not the slope - the slope is in name 2.
+        font = build_vf("Bagoss Condensed VF", [
+            ("Thin Italic", {"wght": 200}),
+            ("Italic", {"wght": 400}),
+            ("Bold Italic", {"wght": 800})],
+            axes=[("wght", 200, 400, 800, "Weight")],
+            ps_prefix="BagossCondensedVFItalic")
+        # make_roman_ital renames the slice with style "Italic"
+        font["name"].setName("Italic", 2, 3, 1, 0x409)
+        font = run(font)
+        nt = font["name"]
+        assert nt.getDebugName(2) == "Italic"
+        labels = {v.Value: nt.getDebugName(v.ValueNameID)
+                  for v in font["STAT"].table.AxisValueArray.AxisValue}
+        assert labels == {200: "Thin", 400: "Regular", 800: "Bold"}
+        assert nt.getDebugName(default_instance(font).subfamilyNameID) == "Italic"
+
     def test_trial_prefix_keeps_the_marker(self):
         font = run(build_vf("Botched VF-TRIAL", [
             ("Light", {"wght": 300}), ("Bold", {"wght": 700})],

@@ -1422,11 +1422,13 @@ def _build_default_wght_code(font: TTFont) -> str | None:
     if weight_default is not None and not any(
         _coords_close(value, weight_default) for value in wght_values
     ):
-        default_name = (
+        # Read as a weight like every instance above: a bare "Italic" (the
+        # RIBBI name of an italic-only slice's default) is the Regular weight,
+        # and its slope belongs to name ID 2, not to a wght axis value.
+        default_name = _weight_label_from_instance_name(
             _instance_subfamily_name(font, 17)
             or _instance_subfamily_name(font, 2)
-            or "Regular"
-        )
+        ) or "Regular"
         wght_values[weight_default] = default_name
 
     if regular_weight is None and weight_axis is not None and _coord_in_range(
