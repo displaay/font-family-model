@@ -59,7 +59,7 @@ from font_family_model.variable import (
     verify_stat_covers_fvar,
 )
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 
 __all__ = [
     "family_variable_font",
