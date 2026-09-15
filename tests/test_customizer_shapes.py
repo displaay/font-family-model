@@ -471,6 +471,34 @@ class TestFamilyVariableFont:
         font = run(self._condensed({"Condensed Thin": "Thin", "Condensed Regular": "Regular"}))
         assert set(instances(font)) == {"Thin", "Regular"}
 
+    @staticmethod
+    def _relabelled(labels):
+        # a source without the family's axes, the way a one-family convention
+        # (Jokker) cuts it: nothing pinned, only the instances relabelled
+        full = run(build_vf("Fam VF", [
+            ("Light", {"wght": 300}),
+            ("Regular", {"wght": 400}),
+            ("SemiBold", {"wght": 600})],
+            axes=[("wght", 300, 400, 700, "Weight")]))
+        return run(vf.family_variable_font(full, {}, styles=labels))
+
+    def test_a_label_is_spelled_like_the_static_face(self):
+        # Jokker's production convention labels its SemiBold "Semibold". The
+        # static face is respelled to SemiBold; the VF instance - and the STAT
+        # value and PostScript name built from it - must not say it otherwise
+        font = self._relabelled({"Light": "Light", "Regular": "Regular",
+                                 "SemiBold": "Semibold"})
+        assert instances(font)["SemiBold"] == "FamVF-SemiBold"
+        stat_names = {font["name"].getDebugName(v.ValueNameID)
+                      for v in font["STAT"].table.AxisValueArray.AxisValue}
+        assert "SemiBold" in stat_names and "Semibold" not in stat_names
+
+    def test_a_customer_label_is_kept_verbatim(self):
+        # not a weight, width and slope alone: a name someone chose
+        font = self._relabelled({"Light": "S-Light", "Regular": "Regular",
+                                 "SemiBold": "S-Semibold"})
+        assert {"S-Light", "S-Semibold"} <= set(instances(font))
+
     def test_the_input_is_left_alone(self):
         full = run(build_vf("Fam VF", self.INSTANCES, axes=self.AXES))
         before = instances(full)

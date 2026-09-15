@@ -917,12 +917,29 @@ def _assign_fvar_instance_postscript_names(
     return assigned
 
 
+def _static_spelling(style: str) -> str:
+    """The spelling a static face of this style carries in ``name`` ID 17.
+
+    A style that is nothing but a weight, a width and a slope is respelled onto
+    its canonical OpenType form - ``Semibold`` becomes ``SemiBold``, ``Ultra
+    Black`` ``ExtraBlack`` - as :func:`font_family_model.names.static_family_names`
+    does for the statics, so a family's variable instances and its static faces
+    never spell one weight two ways. Anything else is a name someone chose, a
+    customer's ``S-Light``, and is kept verbatim.
+    """
+    attrs = family_name_split.parse_style_attributes(style)
+    if not attrs.is_wws_conformant:
+        return style
+    return attrs.full_typographic_subfamily
+
+
 def rename_fvar_instances(font: TTFont, styles) -> int:
     """Rename a variable font's named instances, dropping the ones not wanted.
 
     :param styles: ``{current subfamily: new subfamily}``, or a callable from
         the current subfamily to the new one. An instance the mapping does not
-        list, or the callable answers None for, is removed.
+        list, or the callable answers None for, is removed. A new subfamily is
+        spelled the way a static face of that style is (:func:`_static_spelling`).
     :returns: How many instances were kept.
 
     A subfamily record nothing else points to is rewritten in place, on every
@@ -946,6 +963,7 @@ def rename_fvar_instances(font: TTFont, styles) -> int:
         new = lookup(current)
         if not new:
             continue
+        new = _static_spelling(new)
         kept.append(instance)
         if new == current:
             continue
