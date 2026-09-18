@@ -364,7 +364,7 @@ font, carried in by an API — is a name, and is not yours to correct.
 Released through GitHub Releases, not PyPI:
 
 ```
-font-family-model @ https://github.com/displaay/font-family-model/releases/download/v0.4.4/font_family_model-0.4.4-py3-none-any.whl
+font-family-model @ https://github.com/displaay/font-family-model/releases/download/v0.4.5/font_family_model-0.4.5-py3-none-any.whl
 ```
 
 `fontTools >= 4.62.1` is a floor, not a preference: `instantiateVariableFont`
