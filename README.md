@@ -349,8 +349,9 @@ font, carried in by an API — is a name, and is not yours to correct.
 ## Modules
 
 - **`variable`** — the pass and its two validators
-  (`verify_office_variable_metadata`, `verify_stat_covers_fvar`), and a width
-  family's variable font cut from a collection's (`family_variable_font`)
+  (`verify_office_variable_metadata`, `verify_stat_covers_fvar`), a width
+  family's variable font cut from a collection's (`family_variable_font`), and
+  `drop_compiled_cff2_varstore` for a CFF2 font instanced after it was saved
 - **`family`** — splitting and composing family and style names: weight
   spellings, italic suffixes, width families, collections; what a parsed
   source's static instances are and where they sit

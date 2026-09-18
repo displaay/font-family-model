@@ -1038,6 +1038,37 @@ def rename_fvar_instances(font: TTFont, styles) -> int:
     return len(kept)
 
 
+def drop_compiled_cff2_varstore(font: TTFont) -> TTFont:
+    """Drop the compiled CFF2 ``VarStore`` bytes an earlier save left cached.
+
+    ``cffLib.VarStoreCompiler`` writes ``VarStoreData.data`` when it is already
+    there and compiles the live ``otVarStore`` only when it is not, so the first
+    ``TTFont.save()`` of a CFF2 variable font caches its region list.
+    ``varLib.instancer`` then prunes the regions of the *object* - pinning an
+    axis drops every region that varies along it - and the next save writes the
+    cached region list beside the instanced charstrings and Private DICTs. What
+    comes out claims three regions over two axes where ``fvar`` has one axis and
+    every blend carries one delta: ``tx`` refuses to read it, fontTools' own
+    Private DICT reader asserts, and the glyphs cannot be drawn. Nothing shows
+    in the font object, which is pruned and consistent - only in the bytes.
+
+    So: after instancing a CFF2 font that may have been saved before, and
+    before saving it again. Idempotent and cheap - the store recompiles from
+    ``otVarStore`` at the next save. A font with no CFF2, no VarStore or
+    nothing cached is left alone.
+
+    :returns: The same font, so it can be chained.
+    """
+    if "CFF2" not in font:
+        return font
+    try:
+        var_store = font["CFF2"].cff.topDictIndex[0].VarStore
+    except (AttributeError, IndexError, KeyError):
+        return font
+    var_store.data = None
+    return font
+
+
 def family_variable_font(font: TTFont, location: dict, *, styles=None) -> TTFont:
     """One family's variable font, cut from the variable font of a collection.
 
@@ -1061,6 +1092,7 @@ def family_variable_font(font: TTFont, location: dict, *, styles=None) -> TTFont
     pinned = instantiateVariableFont(
         font, dict(location), inplace=False, updateFontNames=False
     )
+    drop_compiled_cff2_varstore(pinned)
     if "fvar" in pinned and styles is not None:
         rename_fvar_instances(pinned, styles)
     pinned["name"].removeUnusedNames(pinned)
@@ -1370,6 +1402,7 @@ def normalize_office_default(font: TTFont) -> tuple[TTFont, DefaultRebaseResult]
             optimize=False,
             updateFontNames=False,
         )
+        drop_compiled_cff2_varstore(normalized)
     _normalize_default_instance_names(
         normalized,
         office_subfamily,

@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
 from pathlib import Path
 
-from _helpers import make_minimal_ttf
+from _helpers import make_minimal_cff2_vf, make_minimal_ttf
+from fontTools.pens.recordingPen import RecordingPen
 from fontTools.ttLib import TTFont, newTable
 from fontTools.ttLib.tables import otTables
 from fontTools.ttLib.tables._f_v_a_r import Axis, NamedInstance
+from fontTools.varLib.instancer import instantiateVariableFont
 
 from font_family_model import variable as vf_post
 
@@ -2715,6 +2718,58 @@ class VariableFontPostprocessTests(unittest.TestCase):
             self.assertNotIn(400.0, weights)
             self.assertEqual([value for value, elided in weights.items() if elided], [420.0])
             self.assertEqual(vf_post.verify_office_variable_metadata(font), [])
+            font.close()
+
+
+class StaleCFF2VarStoreTest(unittest.TestCase):
+    """A CFF2 font saved once and then instanced has to compile to the
+    regions it is left with, not the ones it was saved with.
+
+    ``cffLib.VarStoreCompiler`` reuses whatever ``VarStoreData.data`` a
+    previous save cached, so the second file would otherwise describe three
+    regions over two axes beside blends carrying one delta each - a font
+    ``tx`` will not read and fontTools itself cannot draw.
+    """
+
+    @staticmethod
+    def _regions_in_bytes(font):
+        buf = io.BytesIO()
+        font.save(buf)
+        buf.seek(0)
+        region_list = (
+            TTFont(buf)["CFF2"].cff.topDictIndex[0].VarStore.otVarStore.VarRegionList
+        )
+        return (region_list.RegionCount, region_list.RegionAxisCount)
+
+    def test_instanced_after_save_writes_the_pruned_varstore(self):
+        font = make_minimal_cff2_vf()
+        self.assertEqual(self._regions_in_bytes(font), (3, 2))
+        font.save(io.BytesIO())  # caches the compiled VarStore
+        cut = instantiateVariableFont(font, {"slnt": 0}, inplace=False)
+        vf_post.drop_compiled_cff2_varstore(cut)
+        self.assertEqual([axis.axisTag for axis in cut["fvar"].axes], ["wght"])
+        self.assertEqual(self._regions_in_bytes(cut), (1, 1))
+
+    def test_family_variable_font_of_a_saved_font_is_sound(self):
+        font = make_minimal_cff2_vf()
+        font.save(io.BytesIO())
+        family = vf_post.family_variable_font(font, {"slnt": 0})
+        self.assertEqual(self._regions_in_bytes(family), (1, 1))
+        # the glyphs of the written font can be drawn: the blends and the
+        # VarStore they index agree
+        buf = io.BytesIO()
+        family.save(buf)
+        buf.seek(0)
+        pen = RecordingPen()
+        TTFont(buf).getGlyphSet()["A"].draw(pen)
+        self.assertTrue(pen.value)
+
+    def test_a_font_without_cff2_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "tiny.ttf"
+            make_minimal_ttf(path, variable=True)
+            font = TTFont(path)
+            self.assertIs(vf_post.drop_compiled_cff2_varstore(font), font)
             font.close()
 
 
