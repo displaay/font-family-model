@@ -459,7 +459,7 @@ def _registered_office_default_location(
             if named_weight is not None
             else (FALLBACK_WGHT_BOLD if is_bold else FALLBACK_WGHT_REGULAR)
         ),
-        "wdth": 100.0,
+        "wdth": _normal_wdth_coordinate(font),
         "ital": 1.0 if is_italic else 0.0,
     }
     if not is_italic:
@@ -471,6 +471,41 @@ def _registered_office_default_location(
         if minimum <= value <= maximum:
             location[tag] = value
     return location
+
+
+def _normal_wdth_coordinate(font: TTFont) -> float:
+    """The width Office draws with no slider moved.
+
+    Registered normal is 100, and every source that maps its wdth axis puts a
+    face there. One that leaves the axis unmapped need not: Panell's widths are
+    the design values 50..200 and its normal face is 103. That face - the one
+    the family names Regular, or the RIBBI face a cut is based on - is the
+    width the font is normal at, the way the Regular weight is the font's own
+    rather than a registered 400.
+    """
+    limits = _axis_limits_by_tag(font)
+    if "wdth" not in limits:
+        return REGISTERED_NORMAL_COORDINATES["wdth"]
+    minimum, default, maximum = limits["wdth"]
+    subfamily = (
+        _instance_subfamily_name(font, 2)
+        or _instance_subfamily_name(font, 17)
+    )
+    wanted = [name for name in (subfamily, "Regular") if name in _OFFICE_RIBBI_SUBFAMILIES]
+    for name in wanted:
+        matching = [
+            instance
+            for instance in font["fvar"].instances
+            if _instance_subfamily_name(font, instance.subfamilyNameID).casefold()
+            == name.casefold()
+        ]
+        if len(matching) == 1:
+            coordinate = matching[0].coordinates.get("wdth")
+            if coordinate is not None:
+                return float(coordinate)
+    if _coord_in_range(REGISTERED_NORMAL_COORDINATES["wdth"], minimum, maximum):
+        return REGISTERED_NORMAL_COORDINATES["wdth"]
+    return default
 
 
 def _resolve_office_default_location(
@@ -1614,20 +1649,25 @@ def _build_default_wdth_code(font: TTFont) -> str | None:
     if width_axis is None:
         return None
     default = float(width_axis.defaultValue)
+    # The elided value is the width the font is normal at, which a source that
+    # leaves its wdth axis unmapped need not draw at 100 (Panell: 103). The
+    # codes are built before the Office rebase, so the default here is still
+    # the origin master's width and cannot stand in for it.
+    normal = _normal_wdth_coordinate(font)
     if not any(_coords_close(value, default) for value in values):
-        values[default] = "Normal" if _coords_close(default, 100.0) else "Default"
+        values[default] = "Normal" if _coords_close(default, normal) else "Default"
     if (
-        float(width_axis.minValue) <= 100.0 <= float(width_axis.maxValue)
-        and not any(_coords_close(value, 100.0) for value in values)
+        _coord_in_range(normal, float(width_axis.minValue), float(width_axis.maxValue))
+        and not any(_coords_close(value, normal) for value in values)
     ):
-        values[100.0] = "Normal"
+        values[normal] = "Normal"
     for value in tuple(values):
-        if _coords_close(value, 100.0):
+        if _coords_close(value, normal):
             values[value] = "Normal"
 
     entries = [
         f"{_format_axis_coordinate(value)}={label}"
-        f"{'*' if _coords_close(value, 100.0) else ''}"
+        f"{'*' if _coords_close(value, normal) else ''}"
         for value, label in sorted(values.items())
     ]
     return f"wdth; {', '.join(entries)}"
@@ -2287,6 +2327,9 @@ def verify_office_variable_metadata(font: TTFont) -> list[str]:
     normal_coordinates = dict(REGISTERED_NORMAL_COORDINATES)
     if regular_weight is not None:
         normal_coordinates["wght"] = regular_weight
+    # the width Office draws with no slider moved, the way the Regular weight
+    # above is the font's own rather than a registered 400
+    normal_coordinates["wdth"] = _normal_wdth_coordinate(font)
     for axis_index, axis in enumerate(font["fvar"].axes):
         if axis.flags & ~0x0001:
             errors.append(
@@ -2341,7 +2384,7 @@ def verify_office_variable_metadata(font: TTFont) -> list[str]:
                     else FALLBACK_WGHT_REGULAR
                 )
             ),
-            "wdth": 100.0,
+            "wdth": normal_coordinates["wdth"],
             "ital": 1.0 if is_italic else 0.0,
         }
         if not is_italic:

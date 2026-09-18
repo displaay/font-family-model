@@ -385,6 +385,65 @@ def _name_platforms(font: TTFont, name_id: int) -> set[tuple[int, int, int]]:
     }
 
 
+def _add_panell_like_fvar(path: Path) -> None:
+    """Panell's shape: an unmapped wdth axis whose normal width is 103.
+
+    The source leaves wdth in design coordinates, so the faces the family
+    names bare - Regular, Bold - sit at 103 and nothing is drawn at the
+    registered 100. Its Variable Font Origin is the Compressed master, and
+    the variable instance is called Regular, which is what name ID 17 says
+    before the Office rebase.
+    """
+    font = TTFont(path)
+    fvar = newTable("fvar")
+    fvar.axes = []
+    for index, (tag, minimum, default, maximum) in enumerate(
+        [
+            ("wght", 400.0, 400.0, 700.0),
+            ("wdth", 50.0, 50.0, 200.0),
+            ("slnt", -14.0, 0.0, 0.0),
+        ],
+        start=1,
+    ):
+        axis = Axis()
+        axis.axisTag = tag
+        axis.minValue = minimum
+        axis.defaultValue = default
+        axis.maxValue = maximum
+        axis.axisNameID = 256 + index
+        fvar.axes.append(axis)
+        font["name"].setName(f"{tag} axis", 256 + index, 3, 1, 0x409)
+
+    widths = [
+        (50.0, "Compressed"),
+        (65.0, "Condensed"),
+        (78.0, "Narrow"),
+        (103.0, ""),
+        (140.0, "Wide"),
+        (170.0, "Extended"),
+        (200.0, "Expanded"),
+    ]
+    name_id = 300
+    for wdth, width_label in widths:
+        for weight, weight_label in ((400.0, "Regular"), (700.0, "Bold")):
+            for slnt, slant_label in ((0.0, ""), (-14.0, "Italic")):
+                label = " ".join(
+                    part for part in (width_label, weight_label, slant_label) if part
+                )
+                font["name"].setName(label, name_id, 3, 1, 0x409)
+                instance = NamedInstance()
+                instance.subfamilyNameID = name_id
+                instance.postscriptNameID = 0xFFFF
+                instance.flags = 0
+                instance.coordinates = {"wght": weight, "wdth": wdth, "slnt": slnt}
+                fvar.instances.append(instance)
+                name_id += 1
+
+    font["fvar"] = fvar
+    font.save(path)
+    font.close()
+
+
 class VariableFontPostprocessTests(unittest.TestCase):
     def test_apply_stat_axis_values_discrete_and_linked(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -2531,6 +2590,56 @@ class VariableFontPostprocessTests(unittest.TestCase):
             vf_post.postprocess_variable_font_file(path)
 
             self.assertEqual(path.read_bytes(), first)
+
+
+    def test_postprocess_a_family_whose_normal_width_is_not_100(self) -> None:
+        # Panell: rebasing onto the registered 100 would leave the implicit
+        # Office face at a width no instance is drawn at, and insert a second
+        # "Regular" beside the one the family authored at 103
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "Panell-VF.ttf"
+            make_minimal_ttf(path)
+            _add_stat_axes(path, ("wght", "wdth", "slnt"))
+            _add_panell_like_fvar(path)
+            font = TTFont(path)
+            vf_post._replace_name(font, 17, "Regular")
+            vf_post._replace_name(font, 2, "Regular")
+            font.save(path)
+            font.close()
+
+            vf_post.postprocess_variable_font_file(path)
+
+            font = TTFont(path)
+            defaults = {axis.axisTag: axis.defaultValue for axis in font["fvar"].axes}
+            self.assertEqual(defaults["wdth"], 103.0)
+            names = [
+                font["name"].getDebugName(instance.subfamilyNameID)
+                for instance in font["fvar"].instances
+            ]
+            self.assertEqual(names.count("Regular"), 1)
+            self.assertEqual(len(names), len(set(names)))
+            self.assertEqual(font["OS/2"].usWidthClass, 5)
+
+            stat = font["STAT"].table
+            tags = [axis.AxisTag for axis in stat.DesignAxisRecord.Axis]
+            widths = {
+                value.Value: (
+                    font["name"].getDebugName(value.ValueNameID),
+                    bool(value.Flags & vf_post.STAT_ELIDABLE_AXIS_VALUE_NAME),
+                )
+                for value in stat.AxisValueArray.AxisValue
+                if getattr(value, "AxisIndex", None) is not None
+                and tags[value.AxisIndex] == "wdth"
+                and hasattr(value, "Value")
+            }
+            self.assertEqual(widths[103.0], ("Normal", True))
+            self.assertNotIn(100.0, widths)
+            self.assertEqual(
+                [value for value, (_label, elided) in widths.items() if elided],
+                [103.0],
+            )
+            self.assertEqual(vf_post.verify_office_variable_metadata(font), [])
+            font.close()
 
 
 if __name__ == "__main__":
