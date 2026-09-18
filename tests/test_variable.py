@@ -444,6 +444,41 @@ def _add_panell_like_fvar(path: Path) -> None:
     font.close()
 
 
+def _add_season_italic_like_fvar(path: Path) -> None:
+    """Season Mix's Italics slice: Regular is 420 and nothing is named Regular.
+
+    The family VF is rebased onto its own Regular weight, and the Italics are
+    cut from it with slnt pinned; the pass has renamed "Regular Italic" to
+    "Italic", name ID 17 and the STAT record they share with it. Nothing is
+    drawn at the registered 400.
+    """
+    font = TTFont(path)
+    fvar = newTable("fvar")
+    fvar.axes = []
+    axis = Axis()
+    axis.axisTag = "wght"
+    axis.minValue, axis.defaultValue, axis.maxValue = 300.0, 420.0, 900.0
+    axis.axisNameID = 257
+    fvar.axes.append(axis)
+    font["name"].setName("wght axis", 257, 3, 1, 0x409)
+
+    name_id = 300
+    for wght, label in ((300.0, "Light Italic"), (420.0, "Italic"), (580.0, "Medium Italic"),
+                        (780.0, "Bold Italic"), (900.0, "Heavy Italic")):
+        font["name"].setName(label, name_id, 3, 1, 0x409)
+        instance = NamedInstance()
+        instance.subfamilyNameID = name_id
+        instance.postscriptNameID = 0xFFFF
+        instance.flags = 0
+        instance.coordinates = {"wght": wght}
+        fvar.instances.append(instance)
+        name_id += 1
+
+    font["fvar"] = fvar
+    font.save(path)
+    font.close()
+
+
 class VariableFontPostprocessTests(unittest.TestCase):
     def test_apply_stat_axis_values_discrete_and_linked(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -2638,6 +2673,47 @@ class VariableFontPostprocessTests(unittest.TestCase):
                 [value for value, (_label, elided) in widths.items() if elided],
                 [103.0],
             )
+            self.assertEqual(vf_post.verify_office_variable_metadata(font), [])
+            font.close()
+
+
+    def test_postprocess_an_italic_slice_whose_regular_weight_is_not_400(self) -> None:
+        # Season Mix: the Italics are cut from a family VF that is Regular at
+        # 420, and no instance is left named Regular to read that off
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "SeasonMix-Italic-VF.ttf"
+            make_minimal_ttf(path)
+            _add_stat_axes(path, ("wght",))
+            _add_season_italic_like_fvar(path)
+            font = TTFont(path)
+            vf_post._replace_name(font, 2, "Italic")
+            vf_post._replace_name(font, 17, "Italic")
+            font.save(path)
+            font.close()
+
+            vf_post.postprocess_variable_font_file(path)
+
+            font = TTFont(path)
+            defaults = {axis.axisTag: axis.defaultValue for axis in font["fvar"].axes}
+            self.assertEqual(defaults["wght"], 420.0)
+            names = [
+                font["name"].getDebugName(instance.subfamilyNameID)
+                for instance in font["fvar"].instances
+            ]
+            self.assertEqual(names.count("Italic"), 1)
+            self.assertEqual(len(names), len(set(names)))
+
+            stat = font["STAT"].table
+            tags = [axis.AxisTag for axis in stat.DesignAxisRecord.Axis]
+            weights = {
+                value.Value: bool(value.Flags & vf_post.STAT_ELIDABLE_AXIS_VALUE_NAME)
+                for value in stat.AxisValueArray.AxisValue
+                if getattr(value, "AxisIndex", None) is not None
+                and tags[value.AxisIndex] == "wght"
+                and hasattr(value, "Value")
+            }
+            self.assertNotIn(400.0, weights)
+            self.assertEqual([value for value, elided in weights.items() if elided], [420.0])
             self.assertEqual(vf_post.verify_office_variable_metadata(font), [])
             font.close()
 

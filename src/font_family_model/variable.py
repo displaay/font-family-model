@@ -453,6 +453,14 @@ def _registered_office_default_location(
     is_italic = office_subfamily in {"Italic", "Bold Italic"}
     weight_label = "Bold" if is_bold else "Regular"
     named_weight = _named_weight_coordinate(font, weight_label)
+    if named_weight is None and not is_bold:
+        # An italic slice has no instance called Regular left to read the
+        # weight off: the pass renames "Regular Italic" to "Italic", name ID 17
+        # with it. Its STAT still marks the normal weight elidable - under that
+        # same name - and that coordinate is the font's own. Season Mix is
+        # Regular at 420, and rebasing its italics onto the registered 400
+        # would put the base at a weight no instance names.
+        named_weight = _stat_elidable_weight(font, names=(weight_label, office_subfamily))
     registered = {
         "wght": (
             named_weight
@@ -508,6 +516,14 @@ def _normal_wdth_coordinate(font: TTFont) -> float:
     return default
 
 
+def _instance_at(font: TTFont, location: dict[str, float]) -> bool:
+    """Whether an fvar instance is drawn exactly at ``location``."""
+    return any(
+        _locations_match(_complete_instance_location(font, instance), location)
+        for instance in font["fvar"].instances
+    )
+
+
 def _resolve_office_default_location(
     font: TTFont,
 ) -> tuple[str, dict[str, float]]:
@@ -536,7 +552,7 @@ def _resolve_office_default_location(
             f"multiple fvar instances are named {office_subfamily!r}"
         )
     if matching_instances:
-        target = _complete_instance_location(font, matching_instances[0])
+        authored = _complete_instance_location(font, matching_instances[0])
         registered_target = _registered_office_default_location(
             font,
             office_subfamily,
@@ -544,9 +560,20 @@ def _resolve_office_default_location(
         registered_tags = {"wght", "wdth", "ital"}
         if office_subfamily in {"Regular", "Bold"}:
             registered_tags.add("slnt")
+        target = dict(authored)
         for tag in registered_tags:
             if tag in target:
                 target[tag] = registered_target[tag]
+        if not _locations_match(target, authored) and not _instance_at(font, target):
+            # The registered coordinates are where Office expects the implicit
+            # face, but only a coordinate some instance is drawn at can be one:
+            # rebasing onto an empty location leaves the base a face the family
+            # never named, and the pass then inserts a second instance under
+            # the Office name beside the authored one. Panell's normal width is
+            # 103 and Season Mix is Regular at 420; neither draws anything at
+            # the registered 100 / 400. The face the family itself names wins,
+            # on whichever axis the two disagree.
+            target = authored
         return office_subfamily, target
     return office_subfamily, _registered_office_default_location(
         font,
@@ -1484,7 +1511,16 @@ def _build_default_wght_code(font: TTFont) -> str | None:
         ) or "Regular"
         wght_values[weight_default] = default_name
 
-    if regular_weight is None and weight_axis is not None and _coord_in_range(
+    if regular_weight is None and weight_default is not None and any(
+        _coords_close(value, weight_default) for value in wght_values
+    ):
+        # No instance is named Regular - an italic slice renamed its own to
+        # "Italic" - so the base the font is drawn at is its normal weight, and
+        # it already has a label above. Inventing a Regular at the registered
+        # 400 instead would elide a weight nothing is drawn at and contradict
+        # fvar (Season Mix is Regular at 420).
+        regular_weight = weight_default
+    elif regular_weight is None and weight_axis is not None and _coord_in_range(
         FALLBACK_WGHT_REGULAR,
         float(weight_axis.minValue),
         float(weight_axis.maxValue),
@@ -2110,15 +2146,24 @@ def _stat_values_for_axis(stat_table, axis_index: int) -> list[otTables.AxisValu
     ]
 
 
-def _stat_elidable_regular_weight(font: TTFont) -> float | None:
-    """Return the wght coordinate of the STAT elidable 'Regular' axis value, if any.
+def _stat_elidable_weight(
+    font: TTFont,
+    *,
+    names: tuple[str, ...] = ("Regular",),
+) -> float | None:
+    """Return the wght coordinate of the STAT elidable axis value, if any.
 
     When the named-Regular fvar instance is absent (italic-only VF, or a source
     that never exported Regular), `_named_weight_coordinate` cannot recover the
-    designer's Regular coordinate. The STAT still carries an elidable 'Regular'
-    entry at that coordinate, so use it as the fallback for the normal weight —
-    letting a bare upright or italic VF keep its designer-chosen Regular
-    coordinate (e.g. 500) instead of forcing the registered 400.
+    designer's Regular coordinate. The STAT still carries an elidable entry at
+    that coordinate, so use it as the fallback for the normal weight — letting a
+    bare upright or italic VF keep its designer-chosen Regular coordinate (e.g.
+    500) instead of forcing the registered 400.
+
+    :param names: the names that entry may carry. A slice cut for the Italics
+        renames its normal face - and the name record the STAT value shares -
+        from "Regular" to "Italic", so the caller that is resolving an italic
+        base passes that spelling too.
     """
     if "STAT" not in font or "fvar" not in font:
         return None
@@ -2130,9 +2175,14 @@ def _stat_elidable_regular_weight(font: TTFont) -> float | None:
     for value in _stat_values_for_axis(stat_table, wght_index):
         if value.Flags & STAT_ELIDABLE_AXIS_VALUE_NAME and _instance_subfamily_name(
             font, value.ValueNameID
-        ) == "Regular":
+        ) in names:
             return float(value.Value)
     return None
+
+
+def _stat_elidable_regular_weight(font: TTFont) -> float | None:
+    """The elidable STAT weight named Regular (:func:`_stat_elidable_weight`)."""
+    return _stat_elidable_weight(font)
 
 
 def _coordinate_covered_by_stat_value(
@@ -2320,10 +2370,15 @@ def verify_office_variable_metadata(font: TTFont) -> list[str]:
         bold_weight = None
     if regular_weight is None:
         # Italic-only VFs rename Regular Italic to Italic, and some sources omit
-        # an explicit Regular record. Fall back to the STAT elidable 'Regular'
-        # coordinate so a bare upright or italic VF can keep its designer-chosen
-        # Regular weight (e.g. 500) instead of forcing the registered 400.
-        regular_weight = _stat_elidable_regular_weight(font)
+        # an explicit Regular record. Fall back to the STAT elidable coordinate
+        # so a bare upright or italic VF can keep its designer-chosen Regular
+        # weight (e.g. 500) instead of forcing the registered 400. The italic
+        # slice carries that entry under its own name, since renaming the face
+        # rewrote the record they share (Season Mix: "Italic" at 420).
+        regular_weight = _stat_elidable_weight(
+            font,
+            names=("Regular", _instance_subfamily_name(font, 2)),
+        )
     normal_coordinates = dict(REGISTERED_NORMAL_COORDINATES)
     if regular_weight is not None:
         normal_coordinates["wght"] = regular_weight
