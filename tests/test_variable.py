@@ -2725,10 +2725,12 @@ class StaleCFF2VarStoreTest(unittest.TestCase):
     """A CFF2 font saved once and then instanced has to compile to the
     regions it is left with, not the ones it was saved with.
 
-    ``cffLib.VarStoreCompiler`` reuses whatever ``VarStoreData.data`` a
-    previous save cached, so the second file would otherwise describe three
-    regions over two axes beside blends carrying one delta each - a font
-    ``tx`` will not read and fontTools itself cannot draw.
+    ``cffLib.VarStoreCompiler`` used to reuse whatever ``VarStoreData.data`` a
+    previous save had cached, so the second file described three regions over
+    two axes beside blends carrying one delta each - a font ``tx`` will not
+    read and fontTools itself cannot draw. Fixed in fontTools 4.66.0
+    (fonttools/fonttools#4199), which is the floor this package pins; these
+    tests hold the pipeline to it.
     """
 
     @staticmethod
@@ -2744,9 +2746,8 @@ class StaleCFF2VarStoreTest(unittest.TestCase):
     def test_instanced_after_save_writes_the_pruned_varstore(self):
         font = make_minimal_cff2_vf()
         self.assertEqual(self._regions_in_bytes(font), (3, 2))
-        font.save(io.BytesIO())  # caches the compiled VarStore
+        font.save(io.BytesIO())  # used to cache the compiled VarStore
         cut = instantiateVariableFont(font, {"slnt": 0}, inplace=False)
-        vf_post.drop_compiled_cff2_varstore(cut)
         self.assertEqual([axis.axisTag for axis in cut["fvar"].axes], ["wght"])
         self.assertEqual(self._regions_in_bytes(cut), (1, 1))
 
@@ -2763,14 +2764,6 @@ class StaleCFF2VarStoreTest(unittest.TestCase):
         pen = RecordingPen()
         TTFont(buf).getGlyphSet()["A"].draw(pen)
         self.assertTrue(pen.value)
-
-    def test_a_font_without_cff2_is_left_alone(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "tiny.ttf"
-            make_minimal_ttf(path, variable=True)
-            font = TTFont(path)
-            self.assertIs(vf_post.drop_compiled_cff2_varstore(font), font)
-            font.close()
 
 
 if __name__ == "__main__":

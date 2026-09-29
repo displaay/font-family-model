@@ -51,7 +51,6 @@ from font_family_model.names import (
     verify_static_family_names,
 )
 from font_family_model.variable import (
-    drop_compiled_cff2_varstore,
     family_variable_font,
     postprocess_variable_font,
     postprocess_variable_font_file,
@@ -60,10 +59,9 @@ from font_family_model.variable import (
     verify_stat_covers_fvar,
 )
 
-__version__ = "0.4.5"
+__version__ = "0.4.6"
 
 __all__ = [
-    "drop_compiled_cff2_varstore",
     "family_variable_font",
     "postprocess_variable_font",
     "postprocess_variable_font_file",

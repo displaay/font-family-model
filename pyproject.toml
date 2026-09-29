@@ -14,10 +14,12 @@ license = { text = "MIT" }
 authors = [{ name = "Displaay Type Foundry" }]
 keywords = ["opentype", "fonts", "variable-fonts", "STAT", "fvar", "name-table"]
 dependencies = [
-    # 4.62.1 is a floor, not a preference: instantiateVariableFont only rebases
-    # a variable font's default safely from that version on, and the rebase
-    # refuses to run below it.
-    "fonttools>=4.62.1,<5",
+    # 4.66.0 is a floor, not a preference: instantiateVariableFont only rebases
+    # a variable font's default safely from 4.62.1 on, and only from 4.66.0
+    # does saving a CFF2 font that was instanced after an earlier save write
+    # the pruned VarStore rather than the cached one (fonttools/fonttools#4199).
+    # The rebase refuses to run below it.
+    "fonttools>=4.66.0,<5",
 ]
 
 [project.optional-dependencies]
