@@ -12,10 +12,11 @@ jobs:
       fail-fast: false
       matrix:
         python: ["3.10", "3.11", "3.12", "3.13"]
-        # 4.62.1 is the floor the rebase needs; the upper end of the 4.x series
+        # 4.66.0 is the floor: the rebase needs 4.62.1 and a CFF2 font
+        # instanced after a save needs 4.66.0. The upper end of the 4.x series
         # is tested too because instantiateVariableFont and the STAT builders
         # are exactly what moves under a fontTools bump.
-        fonttools: ["==4.62.*", "<5"]
+        fonttools: ["==4.66.*", "<5"]
     name: py${{ matrix.python }} fontTools${{ matrix.fonttools }}
     steps:
       - uses: actions/checkout@v4
