@@ -9,7 +9,8 @@ name = "font-family-model"
 dynamic = ["version"]
 description = "OpenType family model: name, fvar and STAT kept consistent with the outlines"
 readme = "README.md"
-requires-python = ">=3.10"
+# 3.11 because fontTools 4.66, the floor below, requires it.
+requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Displaay Type Foundry" }]
 keywords = ["opentype", "fonts", "variable-fonts", "STAT", "fvar", "name-table"]
@@ -42,7 +43,7 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 # The rules that catch defects rather than style: pyflakes finds dead code and
@@ -53,7 +54,7 @@ target-version = "py310"
 select = ["E9", "F", "B", "I"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 # Checked as source rather than as an installed package: there is no py.typed
 # marker, because the package does not yet claim to ship types -- most of
 # variable.py predates the annotations.
