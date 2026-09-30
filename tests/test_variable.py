@@ -745,6 +745,41 @@ class VariableFontPostprocessTests(unittest.TestCase):
             self.assertEqual(vf_post.verify_office_variable_metadata(font), [])
             font.close()
 
+    def test_labels_are_carried_over_when_the_default_moves(self) -> None:
+        # A family whose instances a name convention filtered - the Customizer's
+        # STRAIGHT family of Botched - has none at the Office default: the axis
+        # sits at 300, so the labels read off the font call 300 the normal
+        # weight. The rebase then moves the default to 400 and names an instance
+        # there. STAT has to describe the font as rebased, or it marks a weight
+        # elidable that the font is no longer drawn at and covers nothing at the
+        # default; the names, which the rebase overwrites with RIBBI ones, come
+        # from the font as it stood.
+        previous = (
+            (vf_post.AXIS_VALUES_PARAMETER_NAME,
+             "wght; 300=S-Light*, 650=S-SemiBold, 750=S-Bold"),
+            (vf_post.AXIS_VALUES_PARAMETER_NAME, "opsz; 8=Text*, 60=Display"),
+        )
+        rebased = (
+            (vf_post.AXIS_VALUES_PARAMETER_NAME,
+             "wght; 300=Light, 400>700=Regular*, 650=SemiBold, 750=Bold"),
+            (vf_post.AXIS_VALUES_PARAMETER_NAME, "opsz; 8=Regular*, 60=Display"),
+        )
+
+        carried = vf_post._labels_carried_over(rebased, previous, ("wght",))
+
+        self.assertEqual(carried, (
+            # the rebased coordinates and its elidable default, under the names
+            # the font had: only wght was rebased, so only wght is touched
+            (vf_post.AXIS_VALUES_PARAMETER_NAME,
+             "wght; 300=S-Light, 400>700=Regular*, 650=S-SemiBold, 750=S-Bold"),
+            (vf_post.AXIS_VALUES_PARAMETER_NAME, "opsz; 8=Regular*, 60=Display"),
+        ))
+
+    def test_labels_are_left_alone_when_nothing_was_rebased(self) -> None:
+        rebased = ((vf_post.AXIS_VALUES_PARAMETER_NAME, "wght; 400=Regular*"),)
+        previous = ((vf_post.AXIS_VALUES_PARAMETER_NAME, "wght; 400=Book*"),)
+        self.assertEqual(vf_post._labels_carried_over(rebased, previous, ()), rebased)
+
     def test_named_regular_and_bold_coordinates_drive_ribbi_linking(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = Path(tmp_dir) / "NoncanonicalRIBBI-VF.ttf"

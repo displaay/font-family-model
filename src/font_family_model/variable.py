@@ -1450,6 +1450,53 @@ def _parse_axis_value_entries(body: str) -> list[tuple[int, str]]:
     return entries
 
 
+def _labels_carried_over(
+    rebased: tuple[tuple[str, str], ...],
+    previous: tuple[tuple[str, str], ...],
+    axis_tags,
+) -> tuple[tuple[str, str], ...]:
+    """The rebased Axis Values, wearing the labels the font had before.
+
+    Moving the default renames the default instance to its RIBBI name, so on an
+    axis such as opsz the only place a value like "Text" was written down is the
+    font as it stood before. The coordinates, their order and which of them is
+    elidable come from the rebased font, because that is what STAT has to
+    describe; only the names are carried over.
+    """
+    tags = set(axis_tags)
+    if not tags:
+        return rebased
+
+    previous_labels: dict[tuple[str, int], str] = {}
+    for _parameter_name, stat_code in previous:
+        parsed = parse_axis_value_code(stat_code)
+        if parsed is None:
+            continue
+        axis_tag, body = parsed
+        for merge_key, entry in _parse_axis_value_entries(body):
+            label = entry.split("=", 1)[1].strip().rstrip("*").strip()
+            if label:
+                previous_labels[(axis_tag, merge_key)] = label
+
+    out: list[tuple[str, str]] = []
+    for parameter_name, stat_code in rebased:
+        parsed = parse_axis_value_code(stat_code)
+        if parsed is None or parsed[0] not in tags:
+            out.append((parameter_name, stat_code))
+            continue
+        axis_tag, body = parsed
+        entries = []
+        for merge_key, entry in _parse_axis_value_entries(body):
+            values, label = entry.split("=", 1)
+            label = label.strip()
+            elidable = "*" if label.endswith("*") else ""
+            carried = previous_labels.get((axis_tag, merge_key))
+            name = carried or label.rstrip("*").strip()
+            entries.append(f"{values.strip()}={name}{elidable}")
+        out.append((parameter_name, f"{axis_tag}; " + ", ".join(entries)))
+    return tuple(out)
+
+
 def _merge_axis_bodies(default_body: str, explicit_body: str) -> str:
     merged: dict[int, str] = {
         merge_key: entry for merge_key, entry in _parse_axis_value_entries(default_body)
@@ -3439,6 +3486,15 @@ def postprocess_variable_font(
             name, rebase.office_subfamily,
             ", ".join("%s %g->%g" % (tag, old_defaults[tag], new_defaults[tag])
                       for tag in rebase.changed_axes)))
+        # Those labels describe the font before the rebase: they mark the old
+        # default elidable and say nothing about the new one, which STAT then
+        # does not cover at all. Read the rebased font too, and keep the labels
+        # of the coordinates that survived - only the elidable default moves.
+        pre_rebase_defaults = _labels_carried_over(
+            build_default_axis_value_codes_from_font(font),
+            pre_rebase_defaults,
+            rebase.changed_axes,
+        )
 
     resolved = resolve_stat_axis_value_codes_from_font(
         font,
