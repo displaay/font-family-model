@@ -73,7 +73,8 @@ temporary file that already passed verification.
 
 ## What a processed font looks like
 
-Taken from a real export, and matching what Segoe UI Variable ships:
+Taken from a real export, and matching what Segoe UI Variable ships, except
+that the default instance carries a PostScript name (see below):
 
 | | before | after |
 |---|---|---|
@@ -82,14 +83,20 @@ Taken from a real export, and matching what Segoe UI Variable ships:
 | `name` 6 | `BootonVF-Light` | `BootonVF` |
 | `fvar` wght default | 100 | 400 |
 | `OS/2.usWeightClass` | 100 | 400 |
-| default instance | own PostScript name | `name` ID 17, no PostScript name |
+| default instance | own PostScript name | `name` ID 17, PostScript name = `name` ID 6 |
 | instance at wght 400, slnt −10 | `Regular Italic` | `Italic` |
 | STAT axis values | **0** | 10 |
 | `STAT.ElidedFallbackNameID` | 2 | 17 |
 
-The record at the all-axis default keeps `name` ID 17 and omits a PostScript
-name so that `name` ID 6 stands for it. Adobe and Glyphs still list the face;
-Word does not list `Regular` twice.
+The record at the all-axis default keeps `name` ID 17 and points its
+PostScript name at `name` ID 6, as the `fvar` spec recommends for the default.
+Tested 2026-10-14 on Saans Collection VF: a default record *without* a
+PostScript name is one InDesign on macOS cannot address, and the face falls
+back to a serif (Illustrator was fine either way); with `name` ID 6 InDesign
+and Word for Windows list it once, Word for Mac lists `Regular` twice. The
+duplicate is accepted. No
+record at all loses `Regular` in Word for Windows, and which name ID the record
+points at makes no difference to Word for Mac.
 
 The PostScript side is the pass's too. `name` ID 25 is reduced to ASCII letters
 and digits (a family name spelled with a space, `Booton VF`, becomes

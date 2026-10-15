@@ -17,11 +17,18 @@ no Axis Values custom parameters, values are synthesized from fvar named instanc
 - ital: 0>1=Regular*, 1=Italic when an ital axis is present
 - RIBBI fvar names omit the elidable Regular token (Italic, not Regular Italic)
 - the explicit all-axis-default fvar instance is kept so Glyphs, Adobe, and
-  CSS still list that face. It reuses name ID 17 with no PostScript name.
-  Name 2 is the Office RIBBI face (Regular). Name 17 and the default fvar
-  record keep the authored default label (``Regular``, or ``Standard Regular`` /
-  ``Sans Regular`` when the source names a family suffix). Word for Mac lists
-  Regular twice; that is accepted so Adobe still sees the default instance
+  CSS still list that face. It reuses name ID 17 and takes name ID 6 as its
+  PostScript name, the way the 'fvar' spec recommends. Name 2 is the Office
+  RIBBI face (Regular). Name 17 and the default fvar record keep the authored
+  default label (``Regular``, or ``Standard Regular`` / ``Sans Regular`` when
+  the source names a family suffix). Tested 2026-10-14 on Saans Collection VF:
+  without a PostScript name (``0xFFFF``) InDesign on macOS cannot address the
+  instance and falls back to a serif (Illustrator was fine either way); with
+  name ID 6 Word for Windows merges it with the base face and Word for Mac
+  lists Regular twice. The duplicate is
+  accepted; a face that does not render is not. Dropping the record instead
+  loses Regular in Word for Windows, and which name ID the record points at
+  makes no difference to Word for Mac.
 - italic fvar names that STAT-composed the Variable Font Origin weight
   (``ExtraLight Thin Italic`` when origin is Thin) are repaired back to the
   authored weight + Italic token
@@ -75,6 +82,10 @@ DEFAULT_ITAL_ITALIC = 1.0
 FIXED_FRACTION_BITS = 16
 STAT_ELIDABLE_AXIS_VALUE_NAME = 0x0002
 NO_NAME_ID = 0xFFFF
+# The all-axis-default fvar record names the font itself: 'fvar' recommends
+# name ID 6 for it, and it is the one value every tested application accepts
+# (module docstring).
+DEFAULT_INSTANCE_PS_NAME_ID = 6
 #: Variations PostScript Name Prefix. The OT ``name`` spec restricts it to
 #: ASCII letters and digits, and Adobe TN #5902 builds every named instance's
 #: PostScript name from it.
@@ -752,18 +763,21 @@ def _bind_default_fvar_instance(
     *,
     subfamily_name_id: int,
 ) -> None:
-    """Keep one default fvar record bound to name ID 17, with no PostScript name.
+    """Keep one default fvar record bound to name ID 17 and PostScript name ID 6.
 
-    Adobe and Glyphs need the explicit instance. Word for Mac still lists
-    Regular twice; that is accepted.
+    Adobe and Glyphs need the explicit instance, and InDesign on macOS needs it
+    to carry a PostScript name or it falls back to a serif (see the module
+    docstring). Name ID 6 is the one the 'fvar' spec recommends for the default
+    and the only one Word for Windows merges with the base face. Word for Mac
+    lists Regular twice; that is accepted.
     """
     if default_instances:
         default_instances[0].subfamilyNameID = subfamily_name_id
-        default_instances[0].postscriptNameID = NO_NAME_ID
+        default_instances[0].postscriptNameID = DEFAULT_INSTANCE_PS_NAME_ID
         return
     instance = NamedInstance()
     instance.subfamilyNameID = subfamily_name_id
-    instance.postscriptNameID = NO_NAME_ID
+    instance.postscriptNameID = DEFAULT_INSTANCE_PS_NAME_ID
     instance.flags = 0
     instance.coordinates = dict(_fvar_defaults(font))
     font["fvar"].instances.insert(0, instance)
@@ -925,10 +939,10 @@ def _assign_fvar_instance_postscript_names(
 
     A subfamily with nothing in the repertoire (a Korean style name) keeps
     whatever PostScript name it had, since compacting would leave one constant
-    for every such instance. The all-axis-default instance is left without a
-    PostScript name (``0xFFFF``) and reuses name ID 17. The string on that ID is
-    Regular or the authored family-prefixed default (``Standard Regular``,
-    ``Sans Regular``).
+    for every such instance. The all-axis-default instance takes name ID 6 as
+    its PostScript name (:data:`DEFAULT_INSTANCE_PS_NAME_ID`) and reuses name
+    ID 17. The string on that ID is Regular or the authored family-prefixed
+    default (``Standard Regular``, ``Sans Regular``).
     """
     if "fvar" not in font:
         return 0
@@ -955,7 +969,7 @@ def _assign_fvar_instance_postscript_names(
     for instance in font["fvar"].instances:
         location = _complete_instance_location(font, instance)
         if _locations_match(location, defaults):
-            instance.postscriptNameID = NO_NAME_ID
+            instance.postscriptNameID = DEFAULT_INSTANCE_PS_NAME_ID
             continue
         subfamily = _instance_subfamily_name(font, instance.subfamilyNameID)
         compact = _compact_postscript_token(subfamily)
@@ -2631,10 +2645,12 @@ def verify_office_variable_metadata(font: TTFont) -> list[str]:
         is_default = _locations_match(location, defaults)
         if is_default:
             default_instance_count += 1
-            if instance.postscriptNameID != NO_NAME_ID:
+            if instance.postscriptNameID != DEFAULT_INSTANCE_PS_NAME_ID:
                 errors.append(
-                    "default fvar instance has a PostScript name; "
-                    "Office would list Regular twice"
+                    "default fvar instance must use PostScript name ID 6; "
+                    "without a PostScript name InDesign on macOS falls back "
+                    "to a serif, and any other ID is a second identity for "
+                    "the face name ID 6 already names"
                 )
             if bare_office_family and subfamily_id != 17:
                 errors.append(
@@ -3009,6 +3025,14 @@ def verify_office_variable_metadata(font: TTFont) -> list[str]:
             if instance.postscriptNameID == NO_NAME_ID:
                 continue
             ps_name = _instance_subfamily_name(font, instance.postscriptNameID)
+            if instance.postscriptNameID == DEFAULT_INSTANCE_PS_NAME_ID:
+                # the default is the font itself and carries name ID 6, which
+                # this pass only touches in the italic dedupe; whether that
+                # string is the bare prefix is the caller's contract (the
+                # Customizer's rename_font makes it so), not this validator's.
+                # A non-default instance pointing here is caught above as a
+                # reserved and duplicated postScriptNameID.
+                continue
             if not ps_name.startswith(f"{prefix}-"):
                 label = (
                     _instance_subfamily_name(font, instance.subfamilyNameID)

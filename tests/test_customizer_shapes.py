@@ -131,7 +131,7 @@ class TestNameConventionLabels:
         assert got["S-Bold"] == "BotchedSTRAIGHTSFXVF-SBold"
         # the hyphen is not in the nameID 25 repertoire and must be dropped,
         # but the label itself keeps it
-        assert all("-" not in ps.split("-", 1)[1] for ps in got.values() if ps)
+        assert all(ps.count("-") <= 1 for ps in got.values())
 
     def test_free_text_label(self):
         # "My Lovely Light" is a real label from the nameconv tests
@@ -208,8 +208,9 @@ class TestPostScriptPrefixes:
             ("Light", {"wght": 300}), ("Bold", {"wght": 700})],
             ps_prefix="BotchedVFTRIAL"))
         assert font["name"].getDebugName(6) == "BotchedVFTRIAL"
-        assert all(p.startswith("BotchedVFTRIAL-")
-                   for p in instances(font).values() if p)
+        # the default is the font itself (name ID 6), the rest hang off it
+        assert all(p == "BotchedVFTRIAL" or p.startswith("BotchedVFTRIAL-")
+                   for p in instances(font).values())
 
 
 class TestPostScriptIdentity:
@@ -235,7 +236,8 @@ class TestPostScriptIdentity:
         font["name"].setName("Booton VF", 25, 3, 1, 0x409)
         out = run(font)
         assert out["name"].getDebugName(25) == "BootonVF"
-        assert all(p.startswith("BootonVF-") for p in instances(out).values() if p)
+        assert all(p == "BootonVF" or p.startswith("BootonVF-")
+                   for p in instances(out).values())
 
     def test_instance_names_from_another_prefix_are_renamed(self):
         font = build_vf("Booton VF", self.INSTANCES)
@@ -281,18 +283,56 @@ class TestPostScriptIdentity:
 class TestDefaultInstance:
     """The record at the all-axis default is the contract's one exception."""
 
-    def test_default_reuses_name_17_and_has_no_postscript_name(self):
-        font = run(build_vf("Botched VF", [
-            ("Light", {"wght": 300}),
-            ("Regular", {"wght": 400}),
-            ("Bold", {"wght": 700}),
-        ]))
+    INSTANCES = [
+        ("Light", {"wght": 300}),
+        ("Regular", {"wght": 400}),
+        ("Bold", {"wght": 700}),
+    ]
+
+    def test_default_reuses_name_17_and_is_named_by_name_6(self):
+        font = run(build_vf("Botched VF", self.INSTANCES))
         inst = default_instance(font)
         assert inst.subfamilyNameID == 17
-        assert inst.postscriptNameID == 0xFFFF
-        # ... and nothing else may collide with nameID 6
+        # the record is the font itself; 'fvar' recommends name ID 6 for it and
+        # InDesign on macOS needs *a* PostScript name or it falls back to a serif
+        assert inst.postscriptNameID == 6
+        # ... and no other instance may claim that identity
         name6 = font["name"].getDebugName(6)
-        assert name6 not in {p for p in instances(font).values() if p}
+        others = [i for i in font["fvar"].instances if i is not inst]
+        assert name6 not in {font["name"].getDebugName(i.postscriptNameID)
+                             for i in others}
+
+    def test_a_default_with_its_own_record_is_rebound_to_name_6(self):
+        # the fontmake / Builder shape: the default instance arrives with a
+        # record of its own, BotchedVF-Regular, next to name ID 6 "BotchedVF"
+        font = build_vf("Botched VF", self.INSTANCES)
+        nt = font["name"]
+        default_instance(font).postscriptNameID = nt.addName(
+            "BotchedVF-Regular", platforms=((3, 1, 0x409),))
+        out = run(font)
+        inst = default_instance(out)
+        assert inst.postscriptNameID == 6
+        assert out["name"].getDebugName(6) == "BotchedVF"
+        assert "BotchedVF-Regular" not in {
+            out["name"].getDebugName(i.postscriptNameID)
+            for i in out["fvar"].instances}
+
+    def test_the_validator_rejects_a_default_without_a_postscript_name(self):
+        # the Segoe UI Variable shape; InDesign on macOS cannot address it
+        font = run(build_vf("Botched VF", self.INSTANCES))
+        default_instance(font).postscriptNameID = 0xFFFF
+        errors = vf.verify_office_variable_metadata(font)
+        assert any("PostScript name ID 6" in e for e in errors)
+
+    def test_the_validator_rejects_a_default_with_its_own_postscript_name(self):
+        # the fontmake shape, BotchedVF-Regular: a second identity for the face
+        # name ID 6 already names
+        font = run(build_vf("Botched VF", self.INSTANCES))
+        nt = font["name"]
+        default_instance(font).postscriptNameID = nt.addName(
+            "BotchedVF-Regular", platforms=((3, 1, 0x409),))
+        errors = vf.verify_office_variable_metadata(font)
+        assert any("PostScript name ID 6" in e for e in errors)
 
     def test_a_font_with_no_instances_still_names_its_default_face(self):
         # update_vf_instances can filter every instance away; a variable font
@@ -462,7 +502,7 @@ class TestFamilyVariableFont:
         assert [a.AxisTag for a in font["STAT"].table.DesignAxisRecord.Axis] == ["wght"]
         assert instances(font) == {
             "Thin": "FamCondensedVF-Thin",
-            "Regular": None,
+            "Regular": "FamCondensedVF",
             "Bold": "FamCondensedVF-Bold",
         }
 

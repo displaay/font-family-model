@@ -650,7 +650,7 @@ class VariableFontPostprocessTests(unittest.TestCase):
                 if dict(instance.coordinates) == defaults
             )
             self.assertEqual(regular_instance.subfamilyNameID, 17)
-            self.assertEqual(regular_instance.postscriptNameID, 0xFFFF)
+            self.assertEqual(regular_instance.postscriptNameID, 6)
             fallback_name_id = font["STAT"].table.ElidedFallbackNameID
             self.assertEqual(fallback_name_id, 17)
             self.assertEqual(font["name"].getDebugName(fallback_name_id), "Regular")
@@ -2071,13 +2071,18 @@ class VariableFontPostprocessTests(unittest.TestCase):
             )
             font.close()
 
-    def test_postprocess_keeps_segoe_style_default_fvar_instance(self) -> None:
+    def test_postprocess_gives_segoe_style_default_fvar_instance_name_6(self) -> None:
+        """A default record without a PostScript name gets name ID 6.
+
+        Segoe UI Variable ships its default at 0xFFFF; InDesign on macOS
+        cannot address such a record and falls back to a serif.
+        """
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = Path(tmp_dir) / "DefaultPostScript-VF.ttf"
             make_minimal_ttf(path)
             _add_simple_wght_fvar(path, [(400.0, "Regular"), (700.0, "Bold")])
             font = TTFont(path)
-            font["fvar"].instances[0].postscriptNameID = 6
+            font["fvar"].instances[0].postscriptNameID = 0xFFFF
             font.save(path)
             font.close()
 
@@ -2102,7 +2107,7 @@ class VariableFontPostprocessTests(unittest.TestCase):
                 if font["name"].getDebugName(instance.subfamilyNameID) == "Bold"
             )
             self.assertEqual(regular.subfamilyNameID, 17)
-            self.assertEqual(regular.postscriptNameID, 0xFFFF)
+            self.assertEqual(regular.postscriptNameID, 6)
             self.assertEqual(font["STAT"].table.ElidedFallbackNameID, 17)
             self.assertGreater(bold.postscriptNameID, 255)
             self.assertEqual(
@@ -2159,7 +2164,8 @@ class VariableFontPostprocessTests(unittest.TestCase):
     def test_postprocess_keeps_prefixed_regular_on_multi_family_vf(self) -> None:
         """Fenul-like width families keep Standard Regular in fvar.
 
-        Adobe needs the prefixed default in the instance list. Word lists
+        Adobe needs the prefixed default in the instance list, and InDesign
+        needs it to carry a PostScript name (name ID 6). Word for Mac lists
         Regular twice; that is accepted so Adobe still sees the prefix.
         """
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -2189,7 +2195,7 @@ class VariableFontPostprocessTests(unittest.TestCase):
             self.assertEqual(len(default_instances), 1)
             default = default_instances[0]
             self.assertEqual(default.subfamilyNameID, 17)
-            self.assertEqual(default.postscriptNameID, 0xFFFF)
+            self.assertEqual(default.postscriptNameID, 6)
             self.assertEqual(font["name"].getDebugName(2), "Regular")
             self.assertEqual(font["name"].getDebugName(17), "Standard Regular")
             instance_names = [
@@ -2642,7 +2648,7 @@ class VariableFontPostprocessTests(unittest.TestCase):
             regular = font["fvar"].instances[0]
             bold = font["fvar"].instances[1]
             self.assertEqual(regular.subfamilyNameID, 17)
-            self.assertEqual(regular.postscriptNameID, 0xFFFF)
+            self.assertEqual(regular.postscriptNameID, 6)
             self.assertGreater(bold.postscriptNameID, 255)
             self.assertEqual(
                 font["name"].getDebugName(bold.postscriptNameID),
