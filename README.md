@@ -364,6 +364,12 @@ font, carried in by an API — is a name, and is not yours to correct.
 - **`names`** — the static side: every family-model record for one face —
   `name` 1/2/3/6/16/17/21/22, the RIBBI and WWS bits, the width class — from
   one rule, and `verify_static_family_names` to check it
+- **`instancing`** — `instantiate_variable_font`, the fontTools instancer
+  with CFF2 outlines rounded on absolute point positions. The stock instancer
+  rounds every relative charstring operand on its own, so a moved default
+  walks points off their contours (Roobert's rebased `e` ended 3 units below
+  where it started and drew a notch). The rebase and `family_variable_font`
+  go through it; use it for any other cut of a CFF2 font, too
 
 ## Install
 

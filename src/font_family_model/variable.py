@@ -64,10 +64,10 @@ from fontTools.ttLib import TTFont, newTable
 from fontTools.ttLib.tables import otTables
 from fontTools.ttLib.tables._f_v_a_r import NamedInstance
 from fontTools.varLib import set_default_weight_width_slant
-from fontTools.varLib.instancer import instantiateVariableFont
 
 from font_family_model import family as family_name_split
 from font_family_model.family import width_class_for_wdth
+from font_family_model.instancing import instantiate_variable_font
 from font_family_model.names import mac_roman_encodable, unique_id
 
 _WEIGHT_LABELS = family_name_split.WEIGHT_LABELS
@@ -1072,7 +1072,7 @@ def family_variable_font(font: TTFont, location: dict, *, styles=None) -> TTFont
         instances by their current name, or a callable. None keeps them all.
     :returns: The new font. Without ``fvar`` when every axis was pinned.
     """
-    pinned = instantiateVariableFont(
+    pinned = instantiate_variable_font(
         font, dict(location), inplace=False, updateFontNames=False
     )
     if "fvar" in pinned and styles is not None:
@@ -1377,7 +1377,7 @@ def normalize_office_default(font: TTFont) -> tuple[TTFont, DefaultRebaseResult]
                 f"fontTools>={required},<5 is required to safely rebase a "
                 f"variable-font default; found {fontTools.__version__}"
             )
-        normalized = instantiateVariableFont(
+        normalized = instantiate_variable_font(
             font,
             changed,
             inplace=False,
