@@ -9,18 +9,17 @@ name = "font-family-model"
 dynamic = ["version"]
 description = "OpenType family model: name, fvar and STAT kept consistent with the outlines"
 readme = "README.md"
-# 3.11 because fontTools 4.66, the floor below, requires it.
+# 3.11 because fontTools, at the floor below, requires it.
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Displaay Type Foundry" }]
 keywords = ["opentype", "fonts", "variable-fonts", "STAT", "fvar", "name-table"]
 dependencies = [
-    # 4.66.0 is a floor, not a preference: instantiateVariableFont only rebases
-    # a variable font's default safely from 4.62.1 on, and only from 4.66.0
-    # does saving a CFF2 font that was instanced after an earlier save write
-    # the pruned VarStore rather than the cached one (fonttools/fonttools#4199).
+    # 4.68.0 is a floor, not a preference: only from that version on does
+    # instantiateVariableFont round CFF2 outlines on absolute positions, so that
+    # a moved default keeps its contours closed (fonttools/fonttools#4338).
     # The rebase refuses to run below it.
-    "fonttools>=4.66.0,<5",
+    "fonttools>=4.68.0,<5",
 ]
 
 [project.optional-dependencies]

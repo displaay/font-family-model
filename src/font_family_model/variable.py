@@ -63,11 +63,10 @@ from fontTools.misc.fixedTools import fixedToFloat, floatToFixed
 from fontTools.ttLib import TTFont, newTable
 from fontTools.ttLib.tables import otTables
 from fontTools.ttLib.tables._f_v_a_r import NamedInstance
-from fontTools.varLib import set_default_weight_width_slant
+from fontTools.varLib import instancer, set_default_weight_width_slant
 
 from font_family_model import family as family_name_split
 from font_family_model.family import width_class_for_wdth
-from font_family_model.instancing import instantiate_variable_font
 from font_family_model.names import mac_roman_encodable, unique_id
 
 _WEIGHT_LABELS = family_name_split.WEIGHT_LABELS
@@ -98,7 +97,7 @@ REGISTERED_NORMAL_COORDINATES = {
     "slnt": 0.0,
     "ital": 0.0,
 }
-MIN_L4_INSTANCER_VERSION = (4, 66, 0)
+MIN_L4_INSTANCER_VERSION = (4, 68, 0)
 LogCallback = Callable[[str], None]
 
 @dataclass(frozen=True)
@@ -1072,7 +1071,7 @@ def family_variable_font(font: TTFont, location: dict, *, styles=None) -> TTFont
         instances by their current name, or a callable. None keeps them all.
     :returns: The new font. Without ``fvar`` when every axis was pinned.
     """
-    pinned = instantiate_variable_font(
+    pinned = instancer.instantiateVariableFont(
         font, dict(location), inplace=False, updateFontNames=False
     )
     if "fvar" in pinned and styles is not None:
@@ -1377,7 +1376,7 @@ def normalize_office_default(font: TTFont) -> tuple[TTFont, DefaultRebaseResult]
                 f"fontTools>={required},<5 is required to safely rebase a "
                 f"variable-font default; found {fontTools.__version__}"
             )
-        normalized = instantiate_variable_font(
+        normalized = instancer.instantiateVariableFont(
             font,
             changed,
             inplace=False,

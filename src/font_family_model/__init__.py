@@ -15,9 +15,6 @@ that a font exported by either describes itself the same way.
   instances, and verifies the result. Fails closed.
 - :mod:`font_family_model.family` splits and composes family and style names -
   weight spellings, italic suffixes, width families, collections.
-- :mod:`font_family_model.instancing` instances a variable font the way
-  ``varLib.instancer`` does, but rounds CFF2 outlines on absolute positions so
-  a moved default keeps its contours closed.
 - :mod:`font_family_model.names` holds the static side: every family-model
   record for one face - ``name`` 1/2/3/6/16/17/21/22, the RIBBI and WWS bits,
   the width class - derived from one rule so they cannot disagree.
@@ -35,7 +32,6 @@ from font_family_model.family import (
     wdth_pins_from_gsfont,
     width_class_for_wdth,
 )
-from font_family_model.instancing import instantiate_variable_font
 from font_family_model.names import (
     StaticFamilyNames,
     apply_ribbi_bits,
@@ -72,7 +68,6 @@ __all__ = [
     "variable_font_settings_from_gsfont",
     "verify_office_variable_metadata",
     "verify_stat_covers_fvar",
-    "instantiate_variable_font",
     "parse_style_attributes",
     "split_style_name",
     "compose_family",
