@@ -616,6 +616,18 @@ class TestUniqueId:
     def test_an_empty_field_is_not_preserved(self):
         assert unique_id("X-Bold", existing=";;X-Regular") is None
 
+    def test_a_blank_vendor_stays_blank(self):
+        # What ufo2ft 3.10 writes for a source with no vendor, and the OS/2
+        # spec allows; the record must follow name ID 6 all the same.
+        assert unique_id(
+            "X-Bold", existing="1.000;    ;X-Regular", vendor="    "
+        ) == "1.000;    ;X-Bold"
+
+    def test_a_blank_vendor_takes_the_one_the_font_has(self):
+        assert unique_id(
+            "X-Bold", existing="1.000;    ;X-Regular", version="1.000", vendor="DP"
+        ) == "1.000;DP;X-Bold"
+
     def test_nothing_to_go_on_leaves_the_record_alone(self):
         assert unique_id("X-Bold") is None
         assert unique_id("X-Bold", version="1.0") is None

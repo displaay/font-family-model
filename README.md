@@ -370,7 +370,7 @@ font, carried in by an API — is a name, and is not yours to correct.
 Released through GitHub Releases, not PyPI:
 
 ```
-font-family-model @ https://github.com/displaay/font-family-model/releases/download/v0.4.11/font_family_model-0.4.11-py3-none-any.whl
+font-family-model @ https://github.com/displaay/font-family-model/releases/download/v0.4.12/font_family_model-0.4.12-py3-none-any.whl
 ```
 
 `fontTools >= 4.68.0` is a floor, not a preference: only from that version on

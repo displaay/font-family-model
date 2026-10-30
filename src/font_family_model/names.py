@@ -549,8 +549,9 @@ def unique_id(
     :param existing: The current ``name`` ID 3, if there is one.
     :param version: Fallback for the first field, usually ``name`` ID 5.
     :param vendor: Fallback for the second field, usually ``OS/2.achVendID``.
-    :returns: The identifier, or None when neither source yields both of the
-        first two fields - then the record is better left as it is.
+    :returns: The identifier, or None when neither source yields the first
+        two fields, a blank vendor aside - then the record is better left as
+        it is.
     """
     fields = (existing or "").split(";")
     if len(fields) >= 3 and fields[0].strip() and fields[1].strip():
@@ -558,9 +559,13 @@ def unique_id(
 
     version_field = (version or "").split(";")[0].strip()
     vendor_field = (vendor or "").strip()
-    if not version_field or not vendor_field:
-        return None
-    return f"{version_field};{vendor_field};{postscript_name}"
+    if version_field and vendor_field:
+        return f"{version_field};{vendor_field};{postscript_name}"
+    # OS/2 allows a blank vendor, and ufo2ft 3.10 leaves a source without one
+    # blank: then the existing record has nothing better to be replaced with.
+    if len(fields) >= 3 and fields[0].strip():
+        return f"{fields[0]};{fields[1]};{postscript_name}"
+    return None
 
 
 def apply_unique_id(font, postscript_name: str) -> str | None:
